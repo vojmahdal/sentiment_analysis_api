@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sentiment Analysis</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Sentiment Analysis</h1>
+        <p class="sub">
+          Jednoduché webové rozhraní nad endpointem <code>POST /predict</code>.
+        </p>
+      </header>
+
+      <section class="card">
+        <label class="label" for="text">Text</label>
+        <textarea
+          id="text"
+          rows="6"
+          placeholder="Napiš text, který chceš analyzovat…"
+        >Tento produkt je skvělý!</textarea>
+
+        <div class="row">
+          <button id="analyzeBtn" class="btn">Analyzovat</button>
+          <button id="clearBtn" class="btn secondary" type="button">Vymazat</button>
+          <span id="status" class="status" aria-live="polite"></span>
+        </div>
+
+        <div id="result" class="result" hidden>
+          <div class="resultRow">
+            <span class="k">Label</span>
+            <span id="label" class="v"></span>
+          </div>
+          <div class="resultRow">
+            <span class="k">Score</span>
+            <span id="score" class="v"></span>
+          </div>
+        </div>
+
+        <pre id="error" class="error" hidden></pre>
+      </section>
+
+      <footer class="footer">
+        <a href="/docs">API dokumentace</a>
+        <span class="dot">•</span>
+        <a href="/health">Health</a>
+      </footer>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
