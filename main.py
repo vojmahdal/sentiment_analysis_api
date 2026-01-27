@@ -8,17 +8,16 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="RoBERTa Sentiment Analysis API")
 
-# Cesta ke složce s modelem (uprav podle reality)
-MODEL_PATH = "vojmahdal/roberta-sentiment-3labels" # Pokud je kód ve stejné složce jako model.safetensors
+MODEL_PATH = "vojmahdal/roberta-sentiment-3labels" 
 
 # Jednoduchý frontend (statické soubory)
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Načtení modelu při startu aplikace (aby to bylo rychlé)
+
 try:
-    print("Načítám model, chvíli strpení...")
+    print("Loading model, please wait...")
     sentiment_pipeline = pipeline(
         "sentiment-analysis",
         model=MODEL_PATH,
@@ -38,7 +37,7 @@ def home():
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))
-    return {"message": "Sentiment API běží. Použij POST na /predict."}
+    return {"message": "Sentiment API is running. Use POST on /predict."}
 
 @app.get("/health")
 def health():
@@ -47,10 +46,10 @@ def health():
 @app.post("/predict")
 async def predict_sentiment(request: TextRequest):
     if sentiment_pipeline is None:
-        raise HTTPException(status_code=500, detail="Model není k dispozici.")
+        raise HTTPException(status_code=500, detail="Model is not available.")
     
     if not request.text.strip():
-        raise HTTPException(status_code=400, detail="Text nesmí být prázdný.")
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
     # Samotná predikce
     result = sentiment_pipeline(request.text)[0]

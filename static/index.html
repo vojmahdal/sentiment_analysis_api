@@ -11,7 +11,7 @@
       <header class="header">
         <h1>Sentiment Analysis</h1>
         <p class="sub">
-          Jednoduché webové rozhraní nad endpointem <code>POST /predict</code>.
+          Simple web interface over the <code>POST /predict</code> endpoint.
         </p>
       </header>
 
@@ -20,12 +20,12 @@
         <textarea
           id="text"
           rows="6"
-          placeholder="Napiš text, který chceš analyzovat…"
-        >Tento produkt je skvělý!</textarea>
+          placeholder="Write the text you want to analyze…"
+        >This product is great!</textarea>
 
         <div class="row">
-          <button id="analyzeBtn" class="btn">Analyzovat</button>
-          <button id="clearBtn" class="btn secondary" type="button">Vymazat</button>
+          <button id="analyzeBtn" class="btn">Analyze</button>
+          <button id="clearBtn" class="btn secondary" type="button">Clear</button>
           <span id="status" class="status" aria-live="polite"></span>
         </div>
 
@@ -44,7 +44,7 @@
       </section>
 
       <footer class="footer">
-        <a href="/docs">API dokumentace</a>
+        <a href="/docs">API documentation</a>
         <span class="dot">•</span>
         <a href="/health">Health</a>
       </footer>
