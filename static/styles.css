@@ -152,6 +152,7 @@ textarea:focus {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .footer a {
@@ -165,4 +166,27 @@ textarea:focus {
 
 .dot {
   opacity: 0.6;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.log-table th,
+.log-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  vertical-align: top;
+}
+
+.log-table th {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.log-table tr:last-child td {
+  border-bottom: none;
 }

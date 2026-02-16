@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sentiment Logs</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Previous Inputs</h1>
+        <p class="sub">
+          Anonymized stored inputs from the <code>/predict</code> endpoint.
+        </p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <button id="reloadBtn" class="btn" type="button">Reload</button>
+          <span id="status" class="status" aria-live="polite"></span>
+        </div>
+
+        <div id="empty" class="sub" style="margin-top:12px;">
+          No logs yet. Submit some text on the main page first.
+        </div>
+
+        <div id="tableWrapper" class="result" hidden>
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th>Time (UTC)</th>
+                <th>Text (anonymized)</th>
+                <th>Label</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+
+        <pre id="error" class="error" hidden></pre>
+      </section>
+
+      <footer class="footer">
+        <a href="/">Back to main page</a>
+        <span class="dot">•</span>
+        <a href="/docs">API documentation</a>
+      </footer>
+    </main>
+
+    <script src="/static/logs.js"></script>
+  </body>
+</html>
+

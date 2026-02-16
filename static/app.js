@@ -34,12 +34,12 @@ async function analyze() {
 
   const text = (textEl.value || "").trim();
   if (!text) {
-    showError("Text nesmí být prázdný.");
+    showError("Text cannot be empty.");
     return;
   }
 
   analyzeBtn.disabled = true;
-  setStatus("Analyzuji…");
+  setStatus("Analyzing…");
 
   try {
     const res = await fetch("/predict", {
@@ -52,11 +52,11 @@ async function analyze() {
 
     if (!res.ok) {
       const detail = data?.detail ? `\n\n${JSON.stringify(data.detail)}` : "";
-      throw new Error(`Chyba API (${res.status} ${res.statusText}).${detail}`);
+      throw new Error(`Error API (${res.status} ${res.statusText}).${detail}`);
     }
 
     showResult(data);
-    setStatus("Hotovo.");
+    setStatus("Done.");
   } catch (e) {
     showError(e?.message || String(e));
     setStatus("");
