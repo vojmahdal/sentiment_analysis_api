@@ -1,0 +1,11 @@
+conversation_id,speaker,text
+1,user,"Hi, my name is Sarah Johnson and my order #4521 never arrived. This is unacceptable!"
+1,agent,"I'm very sorry about that Sarah. Can you confirm your email so I can look into it?"
+1,user,"Sure, it's sarah.johnson@example.com and my phone is +1 202 555 0143"
+2,user,"The new app update is fantastic, everything works so smoothly now. Great job!"
+3,user,"I want to cancel my subscription. I've been charged twice this month."
+3,agent,"I understand, let me check the billing for your account."
+4,user,"Can you tell me if the Pro plan supports more than 5 users?"
+5,user,"My internet keeps disconnecting every few minutes since yesterday."
+6,user,"Thank you so much for the quick refund, Michael was very helpful."
+7,user,"Where is my package? It was supposed to arrive in London three days ago."

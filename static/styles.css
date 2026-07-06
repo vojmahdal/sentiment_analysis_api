@@ -190,3 +190,96 @@ textarea:focus {
 .log-table tr:last-child td {
   border-bottom: none;
 }
+
+/* ---- Extended components for the extraction dashboard ---- */
+.cardTitle {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.sub.small {
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.card + .card {
+  margin-top: 16px;
+}
+.resultRow.column,
+.statsRow.column {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.chipType {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent2);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.pill {
+  display: inline-block;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 13px;
+}
+.pill.pos {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+}
+.pill.neg {
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+.pill.neu {
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+.anon {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+.file {
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 280px;
+}
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.statsRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}

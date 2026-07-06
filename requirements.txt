@@ -1,4 +1,8 @@
 fastapi
 uvicorn[standard]
+python-multipart
 transformers
 torch
+presidio-analyzer
+presidio-anonymizer
+spacy

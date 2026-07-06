@@ -1,92 +1,178 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from transformers import pipeline
+"""
+Conversation Data Extraction System - REST API.
+
+Endpoints:
+    GET  /                -> web dashboard
+    GET  /health          -> service + model status
+    POST /analyze         -> run full pipeline on a single message
+    POST /predict         -> sentiment only (backward compatible)
+    POST /ingest          -> batch ingest of a CSV/JSON file
+    GET  /records         -> recent stored (anonymized) records
+    GET  /stats           -> aggregate statistics
+
+The full pipeline extracts named entities, classifies the topic, evaluates
+sentiment, pseudonymizes the text and stores the structured result.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from db import log_to_db, get_logs_from_db
+import db
+import ingest
+from pipeline import process_message, process_batch
+from processors import ner, topics, sentiment, anonymizer
 
-app = FastAPI(title="RoBERTa Sentiment Analysis API")
+app = FastAPI(
+    title="Conversation Data Extraction System",
+    description=(
+        "Extracts named entities, topics and sentiment from chat conversations, "
+        "pseudonymizes personal data (GDPR) and stores structured results."
+    ),
+    version="1.0.0",
+)
 
-MODEL_PATH = "vojmahdal/roberta-sentiment-3labels" 
-
-# Simple frontend (static files)
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-#
-# --- Simple SQLite "database" for logging/anonymized storage ---
-#
-
-try:
-    print("Loading model, please wait...")
-    sentiment_pipeline = pipeline(
-        "sentiment-analysis",
-        model=MODEL_PATH,
-        tokenizer=MODEL_PATH
-    )
-    print("Model successfully loaded!")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    sentiment_pipeline = None
-
-# Definition of the request structure
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
 class TextRequest(BaseModel):
     text: str
+    topic_labels: list[str] | None = None
 
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
 @app.get("/")
 def home():
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))
-    return {"message": "Sentiment API is running. Use POST on /predict."}
+    return {"message": "Conversation Data Extraction System is running. See /docs."}
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": sentiment_pipeline is not None}
+    return {
+        "status": "ok",
+        "models": {
+            "ner": {"name": ner.model_name(), "ready": ner.is_ready()},
+            "topics": {"name": topics.model_name(), "ready": topics.is_ready()},
+            "sentiment": {"name": sentiment.model_name(), "ready": sentiment.is_ready()},
+            "anonymizer": {"backend": anonymizer.backend_name()},
+        },
+    }
 
 
-@app.get("/logs")
-def get_logs(limit: int = 100):
-    """
-    Return last `limit` anonymized inputs from SQLite.
-    Only anonymized_text + metadata, nikdy ne původní text.
-    """
-    return get_logs_from_db(limit=limit)
-
-@app.post("/predict")
-async def predict_sentiment(payload: TextRequest, request: Request):
-    if sentiment_pipeline is None:
-        raise HTTPException(status_code=500, detail="Model is not available.")
-    
-    if not payload.text.strip():
+# ---------------------------------------------------------------------------
+# Core analysis
+# ---------------------------------------------------------------------------
+@app.post("/analyze")
+def analyze(payload: TextRequest):
+    """Run the full pipeline on a single message and store the result."""
+    if not payload.text or not payload.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
-    # Prediction
-    result = sentiment_pipeline(payload.text)[0]
+    result = process_message(payload.text, topic_labels=payload.topic_labels)
 
-    # Try to log anonymized version into SQLite "database"
     try:
-        client_ip = request.client.host if request.client else None
-        log_to_db(
-            original_text=payload.text,
-            label=result["label"],
-            score=float(result["score"]),
-            client_ip=client_ip,
-        )
+        db.save_record(result, source="single")
     except Exception as e:
-        # Logging failure must not break the API
-        print(f"Logging to DB failed: {e}")
-    
+        print(f"[main] Failed to store record: {e}")
+
+    # do not return the raw text in a way that encourages storing it client-side;
+    # we return both for the immediate UI, but only anonymized is persisted.
+    return result
+
+
+@app.post("/predict")
+def predict(payload: TextRequest):
+    """
+    Backward-compatible sentiment-only endpoint.
+    Kept so existing clients of the original API keep working.
+    """
+    if not payload.text or not payload.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    s = sentiment.analyze_sentiment(payload.text)
+    return {"text": payload.text, "label": s["label"], "score": s["score"]}
+
+
+# ---------------------------------------------------------------------------
+# Ingest (batch)
+# ---------------------------------------------------------------------------
+@app.post("/ingest")
+async def ingest_file(file: UploadFile = File(...)):
+    """
+    Ingest a CSV or JSON file of conversations, run the full pipeline on each
+    message, store the results and return a summary.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        messages = ingest.parse_upload(file.filename or "", raw)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
+
+    if not messages:
+        raise HTTPException(
+            status_code=400,
+            detail="No messages found. Expected a 'text'/'message' column or field.",
+        )
+
+    # Cap batch size to keep the demo responsive on limited hardware.
+    MAX_BATCH = 200
+    truncated = len(messages) > MAX_BATCH
+    messages = messages[:MAX_BATCH]
+
+    results = process_batch(messages)
+
+    stored = 0
+    for r in results:
+        try:
+            db.save_record(r, source="ingest")
+            stored += 1
+        except Exception as e:
+            print(f"[main] Failed to store ingest record: {e}")
+
     return {
-        "text": payload.text,
-        "label": result["label"],
-        "score": round(result["score"], 4)
+        "received": len(messages),
+        "processed": len(results),
+        "stored": stored,
+        "truncated": truncated,
+        "items": results,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stored data
+# ---------------------------------------------------------------------------
+@app.get("/records")
+def records(limit: int = 100):
+    """Return recent stored records (anonymized only)."""
+    return db.get_records(limit=limit)
+
+
+@app.get("/stats")
+def get_stats():
+    """Aggregate statistics for the dashboard."""
+    return db.stats()
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

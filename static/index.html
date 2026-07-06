@@ -1,27 +1,29 @@
 <!doctype html>
-<html lang="cs">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sentiment Analysis</title>
+    <title>Conversation Data Extraction</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="container">
       <header class="header">
-        <h1>Sentiment Analysis</h1>
+        <h1>Conversation Data Extraction</h1>
         <p class="sub">
-          Simple web interface over the <code>POST /predict</code> endpoint.
+          Extracts named entities, topics and sentiment from chat messages,
+          pseudonymizes personal data (GDPR) and stores structured results.
         </p>
       </header>
 
+      <!-- Single message analysis -->
       <section class="card">
-        <label class="label" for="text">Text</label>
+        <label class="label" for="text">Message</label>
         <textarea
           id="text"
-          rows="6"
-          placeholder="Write the text you want to analyze…"
-        >This product is great!</textarea>
+          rows="5"
+          placeholder="Write a message to analyze…"
+        >Hi, my name is John Smith and I'm really unhappy. My order never arrived. Email me at john.smith@example.com</textarea>
 
         <div class="row">
           <button id="analyzeBtn" class="btn">Analyze</button>
@@ -31,16 +33,40 @@
 
         <div id="result" class="result" hidden>
           <div class="resultRow">
-            <span class="k">Label</span>
-            <span id="label" class="v"></span>
+            <span class="k">Sentiment</span>
+            <span id="sentiment" class="v"></span>
           </div>
           <div class="resultRow">
-            <span class="k">Score</span>
-            <span id="score" class="v"></span>
+            <span class="k">Topic</span>
+            <span id="topic" class="v"></span>
+          </div>
+          <div class="resultRow column">
+            <span class="k">Entities</span>
+            <div id="entities" class="chips"></div>
+          </div>
+          <div class="resultRow column">
+            <span class="k">Anonymized text</span>
+            <code id="anon" class="anon"></code>
           </div>
         </div>
 
         <pre id="error" class="error" hidden></pre>
+      </section>
+
+      <!-- Batch ingest -->
+      <section class="card">
+        <h2 class="cardTitle">Batch ingest</h2>
+        <p class="sub small">
+          Upload a CSV or JSON file of conversations. Each message is processed by
+          the full pipeline and stored (anonymized). CSV should have a
+          <code>text</code> or <code>message</code> column.
+        </p>
+        <div class="row">
+          <input type="file" id="file" accept=".csv,.json,.tsv,.txt" class="file" />
+          <button id="ingestBtn" class="btn" type="button">Ingest file</button>
+          <span id="ingestStatus" class="status" aria-live="polite"></span>
+        </div>
+        <pre id="ingestError" class="error" hidden></pre>
       </section>
 
       <footer class="footer">
@@ -48,7 +74,7 @@
         <span class="dot">•</span>
         <a href="/health">Health</a>
         <span class="dot">•</span>
-        <a href="/static/logs.html">Logs</a>
+        <a href="/static/records.html">Records</a>
       </footer>
     </main>
 

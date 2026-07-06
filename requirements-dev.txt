@@ -1,0 +1,5 @@
+# Extra dependencies for offline/dev scripts only (not needed to run the API).
+# prepare_dataset.py
+pandas
+# evaluate.py (NER metrics)
+seqeval
