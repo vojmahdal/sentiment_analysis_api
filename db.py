@@ -21,6 +21,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from processors import anonymizer
 
@@ -160,3 +161,58 @@ def stats() -> dict[str, Any]:
         "by_sentiment": {(s or "unknown"): c for s, c in by_sentiment},
         "by_topic": {(t or "unknown"): c for t, c in by_topic},
     }
+
+
+def export_xml(limit: int | None = None) -> bytes:
+    """
+    Export stored (anonymized) records as XML.
+
+    Mirrors the fields returned by ``get_records``. ``limit`` caps the number
+    of most recent records exported; ``None`` exports everything.
+    """
+    query = """
+        SELECT id, created_at, anonymized_text, entities,
+               topic, topic_score, sentiment, sentiment_score,
+               conversation_id, source
+        FROM records
+        ORDER BY id DESC
+    """
+    if limit is not None:
+        query += " LIMIT ?"
+        params: tuple[Any, ...] = (limit,)
+    else:
+        params = ()
+
+    with _db_lock:
+        rows = _db_conn.execute(query, params).fetchall()
+
+    root = ET.Element("records")
+    for r in rows:
+        record_el = ET.SubElement(root, "record", id=str(r[0]))
+        ET.SubElement(record_el, "created_at").text = r[1]
+        ET.SubElement(record_el, "anonymized_text").text = r[2]
+        ET.SubElement(record_el, "topic").text = r[4]
+        ET.SubElement(record_el, "topic_score").text = (
+            str(r[5]) if r[5] is not None else None
+        )
+        ET.SubElement(record_el, "sentiment").text = r[6]
+        ET.SubElement(record_el, "sentiment_score").text = (
+            str(r[7]) if r[7] is not None else None
+        )
+        ET.SubElement(record_el, "conversation_id").text = r[8]
+        ET.SubElement(record_el, "source").text = r[9]
+
+        entities_el = ET.SubElement(record_el, "entities")
+        try:
+            entities = json.loads(r[3]) if r[3] else []
+        except Exception:
+            entities = []
+        for ent in entities:
+            ET.SubElement(
+                entities_el,
+                "entity",
+                type=str(ent.get("type", "")),
+                score=str(ent.get("score", "")),
+            ).text = ent.get("text", "")
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)

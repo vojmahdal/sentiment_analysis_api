@@ -46,10 +46,12 @@ ingest → NER → topic classification → sentiment → anonymization → stor
 |--------|------|-------------|
 | GET | `/` | Web dashboard |
 | GET | `/health` | Service + model status |
+| GET | `/models` | Default, suggested and currently cached sentiment models |
 | POST | `/analyze` | Full pipeline on a single message |
 | POST | `/predict` | Sentiment only (backward compatible) |
 | POST | `/ingest` | Batch ingest of a CSV/JSON file |
 | GET | `/records` | Recent stored (anonymized) records |
+| GET | `/records/export.xml` | Stored records exported as XML |
 | GET | `/stats` | Aggregate statistics |
 
 ### Example
@@ -63,6 +65,27 @@ curl -X POST https://<space-url>/analyze \
 ```bash
 curl -X POST https://<space-url>/ingest -F "file=@sample_chats.csv"
 ```
+
+```bash
+curl https://<space-url>/records/export.xml -o records.xml
+```
+
+## Choosing a sentiment model from the Hugging Face Hub
+
+Since V3, `/analyze`, `/predict` and `/ingest` accept an optional
+`sentiment_model` field (a Hugging Face repo id, e.g.
+`cardiffnlp/twitter-roberta-base-sentiment-latest`). If omitted, the
+author's fine-tuned model (`vojmahdal/roberta-sentiment-3labels`) is used.
+Requested models are downloaded and cached in memory on first use
+(`processors/model_registry.py`), with a small FIFO cache (3 models) to
+bound memory usage. `GET /models` lists the default model, a few suggested
+models, and which ones are currently cached. The web dashboard exposes this
+as an editable field with suggestions.
+
+**Security note:** loaded pipelines never use `trust_remote_code=True`, so an
+arbitrary/untrusted model id supplied by a caller cannot execute custom
+Python code inside the server process - it is limited to standard
+`transformers` text-classification inference.
 
 ## Data protection
 

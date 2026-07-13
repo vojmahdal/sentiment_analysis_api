@@ -25,13 +25,15 @@ from processors import ner, topics, sentiment, anonymizer
 def process_message(
     text: str,
     topic_labels: list[str] | None = None,
+    sentiment_model: str | None = None,
 ) -> dict[str, Any]:
     """
     Run the full pipeline on a single message and return a structured result.
 
     The returned ``anonymized_text`` is safe to store / display; the original
     ``text`` is returned only for the immediate response and is never persisted
-    in readable form (see db.py).
+    in readable form (see db.py). ``sentiment_model`` optionally selects a
+    Hugging Face Hub model id to use instead of the default fine-tuned model.
     """
     text = (text or "").strip()
     if not text:
@@ -47,7 +49,7 @@ def process_message(
 
     entities = ner.extract_entities(text)
     topic_result = topics.classify_topic(text, labels=topic_labels)
-    sentiment_result = sentiment.analyze_sentiment(text)
+    sentiment_result = sentiment.analyze_sentiment(text, model_id=sentiment_model)
     anonymized = anonymizer.anonymize_text(text)
 
     return {
@@ -65,6 +67,7 @@ def process_message(
 def process_batch(
     messages: list[dict[str, Any]],
     topic_labels: list[str] | None = None,
+    sentiment_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Process a list of normalized messages (from ingest).
@@ -75,7 +78,11 @@ def process_batch(
     """
     results: list[dict[str, Any]] = []
     for msg in messages:
-        processed = process_message(msg.get("text", ""), topic_labels=topic_labels)
+        processed = process_message(
+            msg.get("text", ""),
+            topic_labels=topic_labels,
+            sentiment_model=sentiment_model,
+        )
         # carry over ingest metadata
         for key in ("conversation_id", "speaker", "timestamp"):
             if key in msg:

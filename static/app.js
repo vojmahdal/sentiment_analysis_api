@@ -1,4 +1,6 @@
 const textEl = document.getElementById("text");
+const sentimentModelEl = document.getElementById("sentimentModel");
+const modelSuggestionsEl = document.getElementById("modelSuggestions");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const clearBtn = document.getElementById("clearBtn");
 const statusEl = document.getElementById("status");
@@ -13,6 +15,25 @@ const fileEl = document.getElementById("file");
 const ingestBtn = document.getElementById("ingestBtn");
 const ingestStatusEl = document.getElementById("ingestStatus");
 const ingestErrorEl = document.getElementById("ingestError");
+
+async function loadModelSuggestions() {
+  try {
+    const res = await fetch("/models");
+    if (!res.ok) return;
+    const data = await res.json();
+    modelSuggestionsEl.innerHTML = "";
+    for (const modelId of data.suggested || []) {
+      const opt = document.createElement("option");
+      opt.value = modelId;
+      modelSuggestionsEl.appendChild(opt);
+    }
+    if (!sentimentModelEl.value) {
+      sentimentModelEl.value = data.default || "";
+    }
+  } catch (e) {
+    // suggestions are a nicety, not required for the app to work
+  }
+}
 
 function setStatus(msg) {
   statusEl.textContent = msg || "";
@@ -79,11 +100,13 @@ async function analyze() {
   analyzeBtn.disabled = true;
   setStatus("Analyzing…");
 
+  const sentimentModel = (sentimentModelEl.value || "").trim() || null;
+
   try {
     const res = await fetch("/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, sentiment_model: sentimentModel }),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -115,6 +138,8 @@ async function ingest() {
   try {
     const form = new FormData();
     form.append("file", file);
+    const sentimentModel = (sentimentModelEl.value || "").trim();
+    if (sentimentModel) form.append("sentiment_model", sentimentModel);
     const res = await fetch("/ingest", { method: "POST", body: form });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -142,3 +167,5 @@ textEl.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") analyze();
 });
 ingestBtn.addEventListener("click", ingest);
+
+loadModelSuggestions();
