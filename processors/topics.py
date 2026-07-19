@@ -2,20 +2,24 @@
 Topic classification (zero-shot).
 
 Uses ``facebook/bart-large-mnli`` via the Hugging Face
-``zero-shot-classification`` pipeline. The task is framed as Natural Language
-Inference: each candidate label becomes a hypothesis ("This text is about X.")
-and the model scores entailment.
+``zero-shot-classification`` pipeline by default. The task is framed as
+Natural Language Inference: each candidate label becomes a hypothesis
+("This text is about X.") and the model scores entailment.
 
-No training data is required and the candidate labels can be changed at runtime,
-which suits customer-support conversations where annotated topic datasets are
-usually not available.
+No training data is required and the candidate labels can be changed at
+runtime, which suits customer-support conversations where annotated topic
+datasets are usually not available. Since V3, callers may instead pick any
+other zero-shot-classification model from the Hugging Face Hub at request
+time; that model is loaded and cached via ``processors.model_registry``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-_MODEL_NAME = "facebook/bart-large-mnli"
+from processors import model_registry
+
+DEFAULT_MODEL_NAME = "facebook/bart-large-mnli"
 
 # Default candidate topics for a customer-support domain.
 DEFAULT_LABELS = [
@@ -33,8 +37,8 @@ _pipeline = None
 _load_error: str | None = None
 
 
-def _get_pipeline():
-    """Lazy-load the zero-shot pipeline on first call."""
+def _get_default_pipeline():
+    """Lazy-load the default zero-shot pipeline on first call."""
     global _pipeline, _load_error
     if _pipeline is not None or _load_error is not None:
         return _pipeline
@@ -44,9 +48,9 @@ def _get_pipeline():
 
         _pipeline = pipeline(
             "zero-shot-classification",
-            model=_MODEL_NAME,
+            model=DEFAULT_MODEL_NAME,
         )
-        print(f"[topics] Loaded model {_MODEL_NAME}.")
+        print(f"[topics] Loaded model {DEFAULT_MODEL_NAME}.")
     except Exception as e:  # pragma: no cover
         _load_error = str(e)
         print(f"[topics] Failed to load model: {e}")
@@ -57,9 +61,16 @@ def classify_topic(
     text: str,
     labels: list[str] | None = None,
     top_k: int = 3,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Classify ``text`` into one of ``labels``.
+
+    ``model_id`` optionally selects a different Hugging Face Hub
+    zero-shot-classification model (loaded/cached on demand via
+    ``model_registry``) instead of the default. Raises ``RuntimeError`` if
+    that model cannot be loaded, so the API layer can turn it into a clean
+    400 response.
 
     Returns:
         {
@@ -72,7 +83,12 @@ def classify_topic(
         return {"topic": None, "score": 0.0, "all": []}
 
     candidate_labels = labels or DEFAULT_LABELS
-    clf = _get_pipeline()
+
+    if model_id and model_id != DEFAULT_MODEL_NAME:
+        clf = model_registry.get_pipeline(model_id, task="zero-shot-classification")
+    else:
+        clf = _get_default_pipeline()
+
     if clf is None:
         return {"topic": None, "score": 0.0, "all": []}
 
@@ -96,4 +112,4 @@ def is_ready() -> bool:
 
 
 def model_name() -> str:
-    return _MODEL_NAME
+    return DEFAULT_MODEL_NAME

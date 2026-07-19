@@ -1,9 +1,9 @@
-# Class diagram - V3
+# Class diagram - V4
 
 Modules are shown as facade classes over their public functions. GitHub
-renders this Mermaid diagram directly. Compared to V2, this adds
-`ModelRegistry` (dynamic Hugging Face model loading/caching for sentiment
-analysis) and `export_xml()` on `Database`.
+renders this Mermaid diagram directly. Compared to V3, `Database.export_xml()`
+is generalized into `export_records(fmt, limit)`, dispatching to one exporter
+function per format (`xml`, `json`, `csv` - listed in `db.EXPORT_FORMATS`).
 
 ```mermaid
 classDiagram
@@ -14,9 +14,9 @@ classDiagram
         +list_models() dict
         +analyze(payload) dict
         +predict(payload) dict
-        +ingest_file(file, sentiment_model) dict
+        +ingest_file(file, sentiment_model, ner_model, topic_model) dict
         +records(limit) list
-        +export_records_xml(limit) Response
+        +export_records(format, limit) Response
         +get_stats() dict
     }
 
@@ -29,21 +29,21 @@ classDiagram
 
     class Pipeline {
         <<pipeline.py>>
-        +process_message(text, topic_labels, sentiment_model) dict
-        +process_batch(messages, topic_labels, sentiment_model) list
+        +process_message(text, topic_labels, sentiment_model, ner_model, topic_model) dict
+        +process_batch(messages, topic_labels, sentiment_model, ner_model, topic_model) list
     }
 
     class NERProcessor {
         <<processors/ner.py>>
-        -model_name: str = "dslim/bert-base-NER"
-        +extract_entities(text) list
+        -default_model_name: str = "dslim/bert-base-NER"
+        +extract_entities(text, model_id) list
         +is_ready() bool
     }
 
     class TopicClassifier {
         <<processors/topics.py>>
-        -model_name: str = "facebook/bart-large-mnli"
-        +classify_topic(text, labels) dict
+        -default_model_name: str = "facebook/bart-large-mnli"
+        +classify_topic(text, labels, model_id) dict
         +is_ready() bool
     }
 
@@ -56,10 +56,10 @@ classDiagram
 
     class ModelRegistry {
         <<processors/model_registry.py>>
-        -cache: dict~str, Pipeline~
-        -max_cached_models: int = 3
-        +get_pipeline(model_id, task) Pipeline
-        +cached_models() list
+        -cache: dict~"task::model_id", Pipeline~
+        -max_cached_pipelines: int = 6
+        +get_pipeline(model_id, task, **kwargs) Pipeline
+        +cached_models(task) dict
     }
 
     class Anonymizer {
@@ -72,10 +72,11 @@ classDiagram
 
     class Database {
         <<db.py>>
+        -export_formats: dict = {xml, json, csv}
         +save_record(result, source) void
         +get_records(limit) list
         +stats() dict
-        +export_xml(limit) bytes
+        +export_records(fmt, limit) bytes
     }
 
     API --> IngestService : parses uploaded files
@@ -86,5 +87,7 @@ classDiagram
     Pipeline --> TopicClassifier
     Pipeline --> SentimentAnalyzer
     Pipeline --> Anonymizer
+    NERProcessor --> ModelRegistry : loads non-default HF models
+    TopicClassifier --> ModelRegistry : loads non-default HF models
     SentimentAnalyzer --> ModelRegistry : loads non-default HF models
 ```

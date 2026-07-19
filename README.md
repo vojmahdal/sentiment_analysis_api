@@ -22,7 +22,8 @@ version is tagged so the progression is visible in the git history.
 |---------|-----|--------------|
 | V1 | `v1.0` | Single fine-tuned RoBERTa model, `/predict` endpoint, simple SQLite logging with regex anonymization. |
 | V2 | `v2.0` | Full extraction pipeline: batch `/ingest`, NER, zero-shot topic classification, Presidio-based anonymization, dashboard with stored records and statistics. |
-| V3 | `v3.0` | Dynamic sentiment model selection from the Hugging Face Hub at request time, plus XML export of stored records. |
+| V3 | `v3.0` | Dynamic model selection from the Hugging Face Hub (sentiment, NER and topic classification) at request time, plus XML export of stored records. |
+| V4 | `v4.0` | Export of stored records in a choice of formats (XML, JSON, CSV) via a single endpoint, picked from a dropdown button on the dashboard. |
 
 See [`docs/class_diagram.md`](docs/class_diagram.md) for the current architecture.
 
@@ -46,13 +47,13 @@ ingest → NER → topic classification → sentiment → anonymization → stor
 |--------|------|-------------|
 | GET | `/` | Web dashboard |
 | GET | `/health` | Service + model status |
-| GET | `/models` | Default, suggested and currently cached sentiment models |
+| GET | `/models` | Default, suggested and currently cached models, per pipeline step |
 | POST | `/analyze` | Full pipeline on a single message |
 | POST | `/predict` | Sentiment only (backward compatible) |
 | POST | `/ingest` | Batch ingest of a CSV/JSON file |
 | GET | `/records` | Recent stored (anonymized) records |
-| GET | `/records/export.xml` | Stored records exported as XML |
-| GET | `/stats` | Aggregate statistics |
+| GET | `/records/export` | Stored records exported as XML, JSON or CSV (`?format=`) |
+| GET | `/stats` | Aggregate statistics (includes the list of supported export formats) |
 
 ### Example
 
@@ -67,25 +68,55 @@ curl -X POST https://<space-url>/ingest -F "file=@sample_chats.csv"
 ```
 
 ```bash
-curl https://<space-url>/records/export.xml -o records.xml
+curl "https://<space-url>/records/export?format=xml" -o records.xml
+curl "https://<space-url>/records/export?format=json" -o records.json
+curl "https://<space-url>/records/export?format=csv" -o records.csv
 ```
 
-## Choosing a sentiment model from the Hugging Face Hub
+## Exporting stored records
 
-Since V3, `/analyze`, `/predict` and `/ingest` accept an optional
-`sentiment_model` field (a Hugging Face repo id, e.g.
-`cardiffnlp/twitter-roberta-base-sentiment-latest`). If omitted, the
-author's fine-tuned model (`vojmahdal/roberta-sentiment-3labels`) is used.
+Since V4, `GET /records/export` accepts a `format` query parameter (`xml`,
+`json` or `csv`, default `xml`) and an optional `limit`. All three formats
+share the same underlying data (`db._fetch_export_rows`); adding a new
+format only requires one small function in `db.py` plus an entry in
+`db.EXPORT_FORMATS` - `main.py` and the dashboard pick it up automatically.
+CSV flattens the nested entity list into a single `"TYPE:text; ..."` cell
+per record and is written with a UTF-8 BOM so it opens correctly in Excel.
+
+On the dashboard (`/static/records.html`), an **Export ▾** dropdown button
+lists the formats returned by `GET /stats` (`export_formats`); picking one
+downloads the file via `Content-Disposition: attachment`.
+
+## Choosing models from the Hugging Face Hub
+
+Since V3, each of the three ML steps can use a different Hugging Face Hub
+model, selected per request:
+
+| Field | Task | Default |
+|-------|------|---------|
+| `sentiment_model` | `sentiment-analysis` | `vojmahdal/roberta-sentiment-3labels` |
+| `ner_model` | `token-classification` | `dslim/bert-base-NER` |
+| `topic_model` | `zero-shot-classification` | `facebook/bart-large-mnli` |
+
+All three are accepted by `/analyze` (JSON body) and `/ingest` (form
+fields); `/predict` only accepts `sentiment_model` since it is
+sentiment-only. If a field is omitted, that step's default model is used.
 Requested models are downloaded and cached in memory on first use
-(`processors/model_registry.py`), with a small FIFO cache (3 models) to
-bound memory usage. `GET /models` lists the default model, a few suggested
-models, and which ones are currently cached. The web dashboard exposes this
-as an editable field with suggestions.
+(`processors/model_registry.py`), namespaced by task with a small FIFO
+cache (6 pipelines) to bound memory usage. `GET /models` lists, per step,
+the default model, a few suggested models, and which ones are currently
+cached.
+
+The web dashboard exposes this as **radio buttons** for each step - one per
+suggested model, plus a "Custom model" option that reveals a text field
+where any other Hugging Face repo id can be typed in.
 
 **Security note:** loaded pipelines never use `trust_remote_code=True`, so an
 arbitrary/untrusted model id supplied by a caller cannot execute custom
 Python code inside the server process - it is limited to standard
-`transformers` text-classification inference.
+`transformers` inference for the given task. An invalid or incompatible
+model id results in a clean HTTP 400 response instead of crashing the
+server.
 
 ## Data protection
 

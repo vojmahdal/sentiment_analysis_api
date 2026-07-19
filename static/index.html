@@ -25,15 +25,20 @@
           placeholder="Write a message to analyze…"
         >Hi, my name is John Smith and I'm really unhappy. My order never arrived. Email me at john.smith@example.com</textarea>
 
-        <label class="label" for="sentimentModel">Sentiment model (Hugging Face Hub)</label>
-        <input
-          id="sentimentModel"
-          class="modelInput"
-          type="text"
-          list="modelSuggestions"
-          placeholder="vojmahdal/roberta-sentiment-3labels"
-        />
-        <datalist id="modelSuggestions"></datalist>
+        <div class="modelPickers">
+          <div>
+            <span class="label">Sentiment model</span>
+            <div class="modelPicker" id="sentimentModelPicker" data-task="sentiment"></div>
+          </div>
+          <div>
+            <span class="label">NER (entity extraction) model</span>
+            <div class="modelPicker" id="nerModelPicker" data-task="ner"></div>
+          </div>
+          <div>
+            <span class="label">Topic classification model</span>
+            <div class="modelPicker" id="topicModelPicker" data-task="topics"></div>
+          </div>
+        </div>
 
         <div class="row">
           <button id="analyzeBtn" class="btn">Analyze</button>

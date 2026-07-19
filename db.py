@@ -13,7 +13,9 @@ production deployment without changing the rest of the application.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -24,6 +26,15 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from processors import anonymizer
+
+# Export formats supported by export_records(), each mapped to its HTTP
+# media type. Adding a new format only requires a new "_export_<fmt>"
+# function plus an entry here.
+EXPORT_FORMATS = {
+    "xml": "application/xml",
+    "json": "application/json",
+    "csv": "text/csv",
+}
 
 # ---------------------------------------------------------------------------
 # Database location: project folder on Windows, /tmp on Linux (HF Spaces).
@@ -163,13 +174,8 @@ def stats() -> dict[str, Any]:
     }
 
 
-def export_xml(limit: int | None = None) -> bytes:
-    """
-    Export stored (anonymized) records as XML.
-
-    Mirrors the fields returned by ``get_records``. ``limit`` caps the number
-    of most recent records exported; ``None`` exports everything.
-    """
+def _fetch_export_rows(limit: int | None) -> list[tuple[Any, ...]]:
+    """Raw rows (most recent first) shared by every export format."""
     query = """
         SELECT id, created_at, anonymized_text, entities,
                topic, topic_score, sentiment, sentiment_score,
@@ -184,8 +190,17 @@ def export_xml(limit: int | None = None) -> bytes:
         params = ()
 
     with _db_lock:
-        rows = _db_conn.execute(query, params).fetchall()
+        return _db_conn.execute(query, params).fetchall()
 
+
+def _row_entities(row: tuple[Any, ...]) -> list[dict[str, Any]]:
+    try:
+        return json.loads(row[3]) if row[3] else []
+    except Exception:
+        return []
+
+
+def _export_xml(rows: list[tuple[Any, ...]]) -> bytes:
     root = ET.Element("records")
     for r in rows:
         record_el = ET.SubElement(root, "record", id=str(r[0]))
@@ -203,11 +218,7 @@ def export_xml(limit: int | None = None) -> bytes:
         ET.SubElement(record_el, "source").text = r[9]
 
         entities_el = ET.SubElement(record_el, "entities")
-        try:
-            entities = json.loads(r[3]) if r[3] else []
-        except Exception:
-            entities = []
-        for ent in entities:
+        for ent in _row_entities(r):
             ET.SubElement(
                 entities_el,
                 "entity",
@@ -216,3 +227,70 @@ def export_xml(limit: int | None = None) -> bytes:
             ).text = ent.get("text", "")
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _export_json(rows: list[tuple[Any, ...]]) -> bytes:
+    records = [
+        {
+            "id": r[0],
+            "created_at": r[1],
+            "anonymized_text": r[2],
+            "entities": _row_entities(r),
+            "topic": r[4],
+            "topic_score": r[5],
+            "sentiment": r[6],
+            "sentiment_score": r[7],
+            "conversation_id": r[8],
+            "source": r[9],
+        }
+        for r in rows
+    ]
+    return json.dumps(records, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _export_csv(rows: list[tuple[Any, ...]]) -> bytes:
+    # CSV is flat, so entities (a nested list) are serialized into a single
+    # "TYPE:text" cell per entity, semicolon-separated.
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "id",
+            "created_at",
+            "anonymized_text",
+            "topic",
+            "topic_score",
+            "sentiment",
+            "sentiment_score",
+            "conversation_id",
+            "source",
+            "entities",
+        ]
+    )
+    for r in rows:
+        entities_cell = "; ".join(
+            f"{ent.get('type', '')}:{ent.get('text', '')}" for ent in _row_entities(r)
+        )
+        writer.writerow([r[0], r[1], r[2], r[4], r[5], r[6], r[7], r[8], r[9], entities_cell])
+
+    # utf-8-sig (BOM) so Excel opens the file with correct encoding.
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def export_records(fmt: str, limit: int | None = None) -> tuple[bytes, str]:
+    """
+    Export stored (anonymized) records in the given format.
+
+    Returns ``(content_bytes, media_type)``. Raises ``ValueError`` for an
+    unsupported ``fmt`` so the API layer can turn it into a clean 400
+    response. ``limit`` caps the number of most recent records exported;
+    ``None`` exports everything.
+    """
+    fmt = (fmt or "xml").strip().lower()
+    if fmt not in EXPORT_FORMATS:
+        supported = ", ".join(sorted(EXPORT_FORMATS))
+        raise ValueError(f"Unsupported export format '{fmt}'. Supported: {supported}.")
+
+    rows = _fetch_export_rows(limit)
+    exporter = {"xml": _export_xml, "json": _export_json, "csv": _export_csv}[fmt]
+    return exporter(rows), EXPORT_FORMATS[fmt]

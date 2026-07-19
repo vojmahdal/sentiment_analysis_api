@@ -1,6 +1,4 @@
 const textEl = document.getElementById("text");
-const sentimentModelEl = document.getElementById("sentimentModel");
-const modelSuggestionsEl = document.getElementById("modelSuggestions");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const clearBtn = document.getElementById("clearBtn");
 const statusEl = document.getElementById("status");
@@ -16,22 +14,94 @@ const ingestBtn = document.getElementById("ingestBtn");
 const ingestStatusEl = document.getElementById("ingestStatus");
 const ingestErrorEl = document.getElementById("ingestError");
 
-async function loadModelSuggestions() {
+// ---------------------------------------------------------------------------
+// Model pickers: one radio button per suggested model, plus a "Custom model"
+// radio that reveals a free-text input for any other Hugging Face repo id.
+// ---------------------------------------------------------------------------
+const modelPickers = {}; // task -> { getValue() }
+
+function buildModelPicker(containerEl, task, defaultModel, suggestedModels) {
+  containerEl.innerHTML = "";
+  const groupName = `${task}ModelChoice`;
+
+  const models = suggestedModels && suggestedModels.length ? suggestedModels : [defaultModel];
+
+  models.forEach((modelId, i) => {
+    const optionRow = document.createElement("label");
+    optionRow.className = "modelOption";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = groupName;
+    radio.value = modelId;
+    if (modelId === defaultModel || (i === 0 && !models.includes(defaultModel))) {
+      radio.checked = true;
+    }
+
+    optionRow.appendChild(radio);
+    optionRow.appendChild(document.createTextNode(" " + modelId));
+    containerEl.appendChild(optionRow);
+  });
+
+  const customRow = document.createElement("label");
+  customRow.className = "modelOption";
+  const customRadio = document.createElement("input");
+  customRadio.type = "radio";
+  customRadio.name = groupName;
+  customRadio.value = "__custom__";
+  customRow.appendChild(customRadio);
+  customRow.appendChild(document.createTextNode(" Custom model (Hugging Face Hub id):"));
+  containerEl.appendChild(customRow);
+
+  const customInput = document.createElement("input");
+  customInput.type = "text";
+  customInput.className = "modelInput";
+  customInput.placeholder = "e.g. some-namespace/some-model";
+  customInput.disabled = true;
+  containerEl.appendChild(customInput);
+
+  containerEl.addEventListener("change", (e) => {
+    if (e.target.name !== groupName) return;
+    customInput.disabled = e.target.value !== "__custom__";
+    if (!customInput.disabled) customInput.focus();
+  });
+
+  return {
+    getValue() {
+      const checked = containerEl.querySelector(`input[name="${groupName}"]:checked`);
+      if (!checked) return null;
+      if (checked.value === "__custom__") {
+        return (customInput.value || "").trim() || null;
+      }
+      return checked.value;
+    },
+  };
+}
+
+async function loadModelPickers() {
+  const pickerContainers = {
+    sentiment: document.getElementById("sentimentModelPicker"),
+    ner: document.getElementById("nerModelPicker"),
+    topics: document.getElementById("topicModelPicker"),
+  };
+
+  let data = null;
   try {
     const res = await fetch("/models");
-    if (!res.ok) return;
-    const data = await res.json();
-    modelSuggestionsEl.innerHTML = "";
-    for (const modelId of data.suggested || []) {
-      const opt = document.createElement("option");
-      opt.value = modelId;
-      modelSuggestionsEl.appendChild(opt);
-    }
-    if (!sentimentModelEl.value) {
-      sentimentModelEl.value = data.default || "";
-    }
+    if (res.ok) data = await res.json();
   } catch (e) {
-    // suggestions are a nicety, not required for the app to work
+    // fall back to an empty picker (default model only) below
+  }
+
+  for (const [task, containerEl] of Object.entries(pickerContainers)) {
+    if (!containerEl) continue;
+    const info = data?.[task] || {};
+    modelPickers[task] = buildModelPicker(
+      containerEl,
+      task,
+      info.default || "",
+      info.suggested || (info.default ? [info.default] : [])
+    );
   }
 }
 
@@ -100,13 +170,20 @@ async function analyze() {
   analyzeBtn.disabled = true;
   setStatus("Analyzing…");
 
-  const sentimentModel = (sentimentModelEl.value || "").trim() || null;
+  const sentimentModel = modelPickers.sentiment?.getValue() ?? null;
+  const nerModel = modelPickers.ner?.getValue() ?? null;
+  const topicModel = modelPickers.topics?.getValue() ?? null;
 
   try {
     const res = await fetch("/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, sentiment_model: sentimentModel }),
+      body: JSON.stringify({
+        text,
+        sentiment_model: sentimentModel,
+        ner_model: nerModel,
+        topic_model: topicModel,
+      }),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -138,8 +215,12 @@ async function ingest() {
   try {
     const form = new FormData();
     form.append("file", file);
-    const sentimentModel = (sentimentModelEl.value || "").trim();
+    const sentimentModel = modelPickers.sentiment?.getValue();
+    const nerModel = modelPickers.ner?.getValue();
+    const topicModel = modelPickers.topics?.getValue();
     if (sentimentModel) form.append("sentiment_model", sentimentModel);
+    if (nerModel) form.append("ner_model", nerModel);
+    if (topicModel) form.append("topic_model", topicModel);
     const res = await fetch("/ingest", { method: "POST", body: form });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -168,4 +249,4 @@ textEl.addEventListener("keydown", (e) => {
 });
 ingestBtn.addEventListener("click", ingest);
 
-loadModelSuggestions();
+loadModelPickers();

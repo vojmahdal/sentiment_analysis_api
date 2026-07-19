@@ -8,14 +8,16 @@ Endpoints:
     POST /predict             -> sentiment only (backward compatible)
     POST /ingest               -> batch ingest of a CSV/JSON file
     GET  /records             -> recent stored (anonymized) records
-    GET  /records/export.xml  -> stored records exported as XML
+    GET  /records/export      -> stored records exported as XML, JSON or CSV
     GET  /stats               -> aggregate statistics
-    GET  /models              -> default + suggested + currently loaded HF sentiment models
+    GET  /models              -> default + suggested + currently loaded HF models per task
 
 The full pipeline extracts named entities, classifies the topic, evaluates
 sentiment, pseudonymizes the text and stores the structured result. Since V3,
-the sentiment step can use any Hugging Face Hub text-classification model
-selected by the caller, instead of only the fine-tuned default model.
+each of the three ML steps (NER, topic classification, sentiment) can use any
+compatible Hugging Face Hub model selected by the caller, instead of only the
+built-in default model for that step. Since V4, stored records can be
+exported in a choice of formats (XML, JSON, CSV) via `/records/export`.
 """
 
 from __future__ import annotations
@@ -39,22 +41,35 @@ app = FastAPI(
         "Extracts named entities, topics and sentiment from chat conversations, "
         "pseudonymizes personal data (GDPR) and stores structured results."
     ),
-    version="3.0.0",
+    version="4.0.0",
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Curated list of well-known Hugging Face sentiment/text-classification
-# models offered as suggestions in the UI. Any other model id can still be
-# supplied manually - this list is not a whitelist.
-SUGGESTED_SENTIMENT_MODELS = [
-    sentiment.DEFAULT_MODEL_NAME,
-    "cardiffnlp/twitter-roberta-base-sentiment-latest",
-    "distilbert-base-uncased-finetuned-sst-2-english",
-    "nlptown/bert-base-multilingual-uncased-sentiment",
-]
+# Curated lists of well-known Hugging Face models offered as suggestions in
+# the UI, one per pipeline step. Any other compatible model id can still be
+# supplied manually - these lists are not a whitelist.
+SUGGESTED_MODELS = {
+    "sentiment": [
+        sentiment.DEFAULT_MODEL_NAME,
+        "cardiffnlp/twitter-roberta-base-sentiment-latest",
+        "distilbert-base-uncased-finetuned-sst-2-english",
+        "nlptown/bert-base-multilingual-uncased-sentiment",
+    ],
+    "ner": [
+        ner.DEFAULT_MODEL_NAME,
+        "dslim/bert-large-NER",
+        "Jean-Baptiste/roberta-large-ner-english",
+        "dbmdz/bert-large-cased-finetuned-conll03-english",
+    ],
+    "topics": [
+        topics.DEFAULT_MODEL_NAME,
+        "MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
+        "valhalla/distilbart-mnli-12-3",
+    ],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +79,8 @@ class TextRequest(BaseModel):
     text: str
     topic_labels: list[str] | None = None
     sentiment_model: str | None = None
+    ner_model: str | None = None
+    topic_model: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +109,24 @@ def health():
 
 @app.get("/models")
 def list_models():
-    """Default, suggested and currently warm-cached sentiment models."""
+    """Default, suggested and currently warm-cached models, per pipeline step."""
+    cached = model_registry.cached_models()
     return {
-        "default": sentiment.DEFAULT_MODEL_NAME,
-        "suggested": SUGGESTED_SENTIMENT_MODELS,
-        "cached": model_registry.cached_models(),
+        "sentiment": {
+            "default": sentiment.DEFAULT_MODEL_NAME,
+            "suggested": SUGGESTED_MODELS["sentiment"],
+            "cached": cached.get("sentiment-analysis", []),
+        },
+        "ner": {
+            "default": ner.DEFAULT_MODEL_NAME,
+            "suggested": SUGGESTED_MODELS["ner"],
+            "cached": cached.get("token-classification", []),
+        },
+        "topics": {
+            "default": topics.DEFAULT_MODEL_NAME,
+            "suggested": SUGGESTED_MODELS["topics"],
+            "cached": cached.get("zero-shot-classification", []),
+        },
     }
 
 
@@ -114,6 +144,8 @@ def analyze(payload: TextRequest):
             payload.text,
             topic_labels=payload.topic_labels,
             sentiment_model=payload.sentiment_model,
+            ner_model=payload.ner_model,
+            topic_model=payload.topic_model,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -151,6 +183,8 @@ def predict(payload: TextRequest):
 async def ingest_file(
     file: UploadFile = File(...),
     sentiment_model: str | None = Form(None),
+    ner_model: str | None = Form(None),
+    topic_model: str | None = Form(None),
 ):
     """
     Ingest a CSV or JSON file of conversations, run the full pipeline on each
@@ -177,7 +211,12 @@ async def ingest_file(
     messages = messages[:MAX_BATCH]
 
     try:
-        results = process_batch(messages, sentiment_model=sentiment_model)
+        results = process_batch(
+            messages,
+            sentiment_model=sentiment_model,
+            ner_model=ner_model,
+            topic_model=topic_model,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -207,17 +246,29 @@ def records(limit: int = 100):
     return db.get_records(limit=limit)
 
 
-@app.get("/records/export.xml")
-def export_records_xml(limit: int | None = None):
-    """Export stored (anonymized) records as XML."""
-    xml_bytes = db.export_xml(limit=limit)
-    return Response(content=xml_bytes, media_type="application/xml")
+@app.get("/records/export")
+def export_records(format: str = "xml", limit: int | None = None):
+    """
+    Export stored (anonymized) records. ``format`` is one of the keys in
+    ``db.EXPORT_FORMATS`` (currently ``xml``, ``json``, ``csv``).
+    """
+    try:
+        content, media_type = db.export_records(format, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    filename = f"records.{format.lower()}"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/stats")
 def get_stats():
-    """Aggregate statistics for the dashboard."""
-    return db.stats()
+    """Aggregate statistics for the dashboard, plus the supported export formats."""
+    return {**db.stats(), "export_formats": sorted(db.EXPORT_FORMATS)}
 
 
 if __name__ == "__main__":

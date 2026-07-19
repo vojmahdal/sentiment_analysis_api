@@ -6,6 +6,9 @@ const bodyEl = document.getElementById("logBody");
 const reloadBtn = document.getElementById("reloadBtn");
 const statsEl = document.getElementById("stats");
 
+const exportBtn = document.getElementById("exportBtn");
+const exportMenu = document.getElementById("exportMenu");
+
 function setStatus(msg) {
   statusEl.textContent = msg || "";
 }
@@ -13,6 +16,44 @@ function showError(msg) {
   errorEl.textContent = msg;
   errorEl.hidden = !msg;
 }
+
+// ---------------------------------------------------------------------------
+// Export dropdown button: one menu item per supported export format.
+// ---------------------------------------------------------------------------
+function setExportMenuOpen(open) {
+  exportMenu.hidden = !open;
+  exportBtn.setAttribute("aria-expanded", String(open));
+}
+
+function buildExportMenu(formats) {
+  exportMenu.innerHTML = "";
+  for (const fmt of formats) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "dropdownItem";
+    item.setAttribute("role", "menuitem");
+    item.dataset.format = fmt;
+    item.textContent = fmt.toUpperCase();
+    exportMenu.appendChild(item);
+  }
+}
+
+exportBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setExportMenuOpen(exportMenu.hidden);
+});
+
+exportMenu.addEventListener("click", (e) => {
+  const fmt = e.target.dataset.format;
+  if (!fmt) return;
+  setExportMenuOpen(false);
+  window.location.href = `/records/export?format=${encodeURIComponent(fmt)}`;
+});
+
+document.addEventListener("click", () => setExportMenuOpen(false));
+exportMenu.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setExportMenuOpen(false);
+});
 
 function sentimentClass(label) {
   const l = (label || "").toLowerCase();
@@ -92,6 +133,7 @@ async function load() {
     }
 
     renderStats(stats);
+    buildExportMenu(stats?.export_formats || ["xml", "json", "csv"]);
 
     if (!Array.isArray(records) || records.length === 0) {
       emptyEl.hidden = false;
