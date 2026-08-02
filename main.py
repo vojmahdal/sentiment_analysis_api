@@ -6,7 +6,8 @@ Endpoints:
     GET  /health              -> service + model status
     POST /analyze             -> run full pipeline on a single message
     POST /predict             -> sentiment only (backward compatible)
-    POST /ingest               -> batch ingest of a CSV/JSON file
+    POST /ingest               -> start a batch ingest job, returns a job id
+    GET  /ingest/status/{id}  -> progress / result of a background ingest job
     GET  /records             -> recent stored (anonymized) records
     GET  /records/export      -> stored records exported as XML, JSON or CSV
     GET  /stats               -> aggregate statistics
@@ -17,11 +18,15 @@ sentiment, pseudonymizes the text and stores the structured result. Since V3,
 each of the three ML steps (NER, topic classification, sentiment) can use any
 compatible Hugging Face Hub model selected by the caller, instead of only the
 built-in default model for that step. Since V4, stored records can be
-exported in a choice of formats (XML, JSON, CSV) via `/records/export`.
+exported in a choice of formats (XML, JSON, CSV) via `/records/export`. Since
+V7, `/ingest` runs as a background job (see `jobs.py`) instead of one long
+blocking request, so the dashboard can show a progress bar and elapsed timer.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +37,7 @@ from pydantic import BaseModel
 
 import db
 import ingest
+import jobs
 from pipeline import process_message, process_batch
 from processors import ner, topics, sentiment, anonymizer, model_registry
 
@@ -41,7 +47,7 @@ app = FastAPI(
         "Extracts named entities, topics and sentiment from chat conversations, "
         "pseudonymizes personal data (GDPR) and stores structured results."
     ),
-    version="4.0.0",
+    version="7.0.0",
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -179,7 +185,7 @@ def predict(payload: TextRequest):
 # ---------------------------------------------------------------------------
 # Ingest (batch)
 # ---------------------------------------------------------------------------
-@app.post("/ingest")
+@app.post("/ingest", status_code=202)
 async def ingest_file(
     file: UploadFile = File(...),
     sentiment_model: str | None = Form(None),
@@ -187,8 +193,14 @@ async def ingest_file(
     topic_model: str | None = Form(None),
 ):
     """
-    Ingest a CSV or JSON file of conversations, run the full pipeline on each
-    message, store the results and return a summary.
+    Start a background job that ingests a CSV or JSON file of conversations
+    and runs the full pipeline on each message. Returns immediately with a
+    job id; poll ``GET /ingest/status/{job_id}`` for progress and, once
+    finished, the same summary this endpoint used to return directly
+    (``received``, ``processed``, ``stored``, ``truncated``, ``items``).
+
+    Parsing/validating the file happens synchronously here (fast, no model
+    calls); only the actual NLP processing runs in the background.
     """
     raw = await file.read()
     if not raw:
@@ -210,31 +222,76 @@ async def ingest_file(
     truncated = len(messages) > MAX_BATCH
     messages = messages[:MAX_BATCH]
 
-    try:
-        results = process_batch(
-            messages,
-            sentiment_model=sentiment_model,
-            ner_model=ner_model,
-            topic_model=topic_model,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    job_id = jobs.create_job(total=len(messages))
 
-    stored = 0
-    for r in results:
+    def run_job() -> None:
         try:
-            db.save_record(r, source="ingest")
-            stored += 1
-        except Exception as e:
-            print(f"[main] Failed to store ingest record: {e}")
+            results = process_batch(
+                messages,
+                sentiment_model=sentiment_model,
+                ner_model=ner_model,
+                topic_model=topic_model,
+                on_progress=jobs.progress_callback(job_id),
+            )
+        except RuntimeError as e:
+            jobs.fail_job(job_id, str(e))
+            return
+        except Exception as e:  # pragma: no cover - safety net so a job never hangs
+            jobs.fail_job(job_id, f"Unexpected error: {e}")
+            return
 
-    return {
-        "received": len(messages),
-        "processed": len(results),
-        "stored": stored,
-        "truncated": truncated,
-        "items": results,
+        stored = 0
+        for r in results:
+            try:
+                db.save_record(r, source="ingest")
+                stored += 1
+            except Exception as e:
+                print(f"[main] Failed to store ingest record: {e}")
+
+        jobs.finish_job(job_id, {
+            "received": len(messages),
+            "processed": len(results),
+            "stored": stored,
+            "truncated": truncated,
+            "items": results,
+        })
+
+    # Runs the (blocking, CPU-bound) pipeline in a plain thread rather than
+    # an asyncio task, so it doesn't block the event loop and status polls
+    # keep being served while it runs.
+    threading.Thread(target=run_job, daemon=True).start()
+
+    return {"job_id": job_id, "total": len(messages)}
+
+
+@app.get("/ingest/status/{job_id}")
+def ingest_status(job_id: str):
+    """
+    Progress of a background ingest job started via ``POST /ingest``.
+
+    ``status`` is one of ``running``, ``done`` or ``error``. Once ``done``,
+    ``result`` holds the same summary the old synchronous ``/ingest``
+    returned directly.
+    """
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Unknown job id (it may have finished long ago, or the server restarted).",
+        )
+
+    finished_at = job["finished_at"] or time.time()
+    response: dict[str, Any] = {
+        "status": job["status"],
+        "processed": job["processed"],
+        "total": job["total"],
+        "elapsed_seconds": round(finished_at - job["started_at"], 1),
     }
+    if job["status"] == "done":
+        response["result"] = job["result"]
+    elif job["status"] == "error":
+        response["error"] = job["error"]
+    return response
 
 
 # ---------------------------------------------------------------------------

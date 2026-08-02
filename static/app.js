@@ -13,67 +13,65 @@ const fileEl = document.getElementById("file");
 const ingestBtn = document.getElementById("ingestBtn");
 const ingestStatusEl = document.getElementById("ingestStatus");
 const ingestErrorEl = document.getElementById("ingestError");
+const ingestProgressEl = document.getElementById("ingestProgress");
+const ingestProgressBarEl = document.getElementById("ingestProgressBar");
+const ingestProgressLabelEl = document.getElementById("ingestProgressLabel");
+const ingestTimerEl = document.getElementById("ingestTimer");
 
 // ---------------------------------------------------------------------------
-// Model pickers: one radio button per suggested model, plus a "Custom model"
-// radio that reveals a free-text input for any other Hugging Face repo id.
+// Model pickers: a <select> dropdown listing the suggested models plus a
+// "Custom model…" option. The free-text input for a custom Hugging Face
+// repo id is hidden by default and only appears once "Custom model…" is
+// selected in the dropdown.
 // ---------------------------------------------------------------------------
 const modelPickers = {}; // task -> { getValue() }
 
 function buildModelPicker(containerEl, task, defaultModel, suggestedModels) {
   containerEl.innerHTML = "";
-  const groupName = `${task}ModelChoice`;
 
   const models = suggestedModels && suggestedModels.length ? suggestedModels : [defaultModel];
 
-  models.forEach((modelId, i) => {
-    const optionRow = document.createElement("label");
-    optionRow.className = "modelOption";
+  const select = document.createElement("select");
+  select.className = "modelSelect";
+  select.setAttribute("aria-label", `${task} model`);
 
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = groupName;
-    radio.value = modelId;
-    if (modelId === defaultModel || (i === 0 && !models.includes(defaultModel))) {
-      radio.checked = true;
-    }
+  for (const modelId of models) {
+    const opt = document.createElement("option");
+    opt.value = modelId;
+    opt.textContent = modelId;
+    select.appendChild(opt);
+  }
 
-    optionRow.appendChild(radio);
-    optionRow.appendChild(document.createTextNode(" " + modelId));
-    containerEl.appendChild(optionRow);
-  });
+  const customOpt = document.createElement("option");
+  customOpt.value = "__custom__";
+  customOpt.textContent = "Custom model (Hugging Face Hub id)…";
+  select.appendChild(customOpt);
 
-  const customRow = document.createElement("label");
-  customRow.className = "modelOption";
-  const customRadio = document.createElement("input");
-  customRadio.type = "radio";
-  customRadio.name = groupName;
-  customRadio.value = "__custom__";
-  customRow.appendChild(customRadio);
-  customRow.appendChild(document.createTextNode(" Custom model (Hugging Face Hub id):"));
-  containerEl.appendChild(customRow);
+  if (models.includes(defaultModel)) {
+    select.value = defaultModel;
+  }
 
   const customInput = document.createElement("input");
   customInput.type = "text";
   customInput.className = "modelInput";
   customInput.placeholder = "e.g. some-namespace/some-model";
-  customInput.disabled = true;
-  containerEl.appendChild(customInput);
+  customInput.hidden = true;
 
-  containerEl.addEventListener("change", (e) => {
-    if (e.target.name !== groupName) return;
-    customInput.disabled = e.target.value !== "__custom__";
-    if (!customInput.disabled) customInput.focus();
+  select.addEventListener("change", () => {
+    const isCustom = select.value === "__custom__";
+    customInput.hidden = !isCustom;
+    if (isCustom) customInput.focus();
   });
+
+  containerEl.appendChild(select);
+  containerEl.appendChild(customInput);
 
   return {
     getValue() {
-      const checked = containerEl.querySelector(`input[name="${groupName}"]:checked`);
-      if (!checked) return null;
-      if (checked.value === "__custom__") {
+      if (select.value === "__custom__") {
         return (customInput.value || "").trim() || null;
       }
-      return checked.value;
+      return select.value;
     },
   };
 }
@@ -200,6 +198,75 @@ async function analyze() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Batch ingest: /ingest now starts a background job and returns immediately
+// (see jobs.py). We poll /ingest/status/{job_id} for progress and drive a
+// progress bar + elapsed-time timer while it runs.
+// ---------------------------------------------------------------------------
+let ingestTimerHandle = null;
+let ingestPollHandle = null;
+
+function stopIngestTimers() {
+  if (ingestTimerHandle) clearInterval(ingestTimerHandle);
+  if (ingestPollHandle) clearInterval(ingestPollHandle);
+  ingestTimerHandle = null;
+  ingestPollHandle = null;
+}
+
+function startIngestTimer(startedAt) {
+  ingestTimerEl.textContent = "0.0 s";
+  ingestTimerHandle = setInterval(() => {
+    const elapsed = (Date.now() - startedAt) / 1000;
+    ingestTimerEl.textContent = `${elapsed.toFixed(1)} s`;
+  }, 100);
+}
+
+function updateIngestProgress(processed, total) {
+  ingestProgressBarEl.max = Math.max(total, 1);
+  ingestProgressBarEl.value = processed;
+  ingestProgressLabelEl.textContent = `Zpracováno ${processed} z ${total}`;
+}
+
+function finishIngest(message, isError) {
+  stopIngestTimers();
+  ingestBtn.disabled = false;
+  ingestStatusEl.textContent = isError ? "" : message;
+  if (isError) {
+    ingestErrorEl.textContent = message;
+    ingestErrorEl.hidden = false;
+  }
+}
+
+async function pollIngestJob(jobId) {
+  ingestPollHandle = setInterval(async () => {
+    let res, status;
+    try {
+      res = await fetch(`/ingest/status/${jobId}`);
+      status = await res.json();
+    } catch (e) {
+      finishIngest(`Ztraceno spojení se serverem: ${e?.message || e}`, true);
+      return;
+    }
+
+    if (!res.ok) {
+      finishIngest(status?.detail || `Neznámá úloha (HTTP ${res.status}).`, true);
+      return;
+    }
+
+    updateIngestProgress(status.processed, status.total);
+
+    if (status.status === "done") {
+      const note = status.result.truncated ? " (dávka omezena na 200 zpráv)" : "";
+      finishIngest(
+        `Zpracováno ${status.result.processed}, uloženo ${status.result.stored}${note}. Viz Records.`,
+        false
+      );
+    } else if (status.status === "error") {
+      finishIngest(`Zpracování selhalo: ${status.error}`, true);
+    }
+  }, 1000);
+}
+
 async function ingest() {
   ingestErrorEl.hidden = true;
   const file = fileEl.files?.[0];
@@ -210,7 +277,9 @@ async function ingest() {
   }
 
   ingestBtn.disabled = true;
-  ingestStatusEl.textContent = "Uploading and processing…";
+  ingestStatusEl.textContent = "Nahrávání…";
+  ingestProgressEl.hidden = false;
+  updateIngestProgress(0, 0);
 
   try {
     const form = new FormData();
@@ -227,13 +296,16 @@ async function ingest() {
       const detail = data?.detail ? `: ${JSON.stringify(data.detail)}` : "";
       throw new Error(`API error (${res.status})${detail}`);
     }
-    const note = data.truncated ? " (batch truncated to 200)" : "";
-    ingestStatusEl.textContent = `Processed ${data.processed}, stored ${data.stored}${note}. See Records.`;
+
+    ingestStatusEl.textContent = "Zpracovávání…";
+    updateIngestProgress(0, data.total);
+    startIngestTimer(Date.now());
+    pollIngestJob(data.job_id);
   } catch (e) {
+    ingestProgressEl.hidden = true;
     ingestErrorEl.textContent = e?.message || String(e);
     ingestErrorEl.hidden = false;
     ingestStatusEl.textContent = "";
-  } finally {
     ingestBtn.disabled = false;
   }
 }

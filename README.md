@@ -23,7 +23,6 @@ version is tagged so the progression is visible in the git history.
 | V1 | `v1.0` | Single fine-tuned RoBERTa model, `/predict` endpoint, simple SQLite logging with regex anonymization. |
 | V2 | `v2.0` | Full extraction pipeline: batch `/ingest`, NER, zero-shot topic classification, Presidio-based anonymization, dashboard with stored records and statistics. |
 | V3 | `v3.0` | Dynamic model selection from the Hugging Face Hub (sentiment, NER and topic classification) at request time, plus XML export of stored records. |
-| V4 | `v4.0` | Export of stored records in a choice of formats (XML, JSON, CSV) via a single endpoint, picked from a dropdown button on the dashboard. |
 
 See [`docs/class_diagram.md`](docs/class_diagram.md) for the current architecture.
 
@@ -52,8 +51,8 @@ ingest → NER → topic classification → sentiment → anonymization → stor
 | POST | `/predict` | Sentiment only (backward compatible) |
 | POST | `/ingest` | Batch ingest of a CSV/JSON file |
 | GET | `/records` | Recent stored (anonymized) records |
-| GET | `/records/export` | Stored records exported as XML, JSON or CSV (`?format=`) |
-| GET | `/stats` | Aggregate statistics (includes the list of supported export formats) |
+| GET | `/records/export.xml` | Stored records exported as XML |
+| GET | `/stats` | Aggregate statistics |
 
 ### Example
 
@@ -68,24 +67,8 @@ curl -X POST https://<space-url>/ingest -F "file=@sample_chats.csv"
 ```
 
 ```bash
-curl "https://<space-url>/records/export?format=xml" -o records.xml
-curl "https://<space-url>/records/export?format=json" -o records.json
-curl "https://<space-url>/records/export?format=csv" -o records.csv
+curl https://<space-url>/records/export.xml -o records.xml
 ```
-
-## Exporting stored records
-
-Since V4, `GET /records/export` accepts a `format` query parameter (`xml`,
-`json` or `csv`, default `xml`) and an optional `limit`. All three formats
-share the same underlying data (`db._fetch_export_rows`); adding a new
-format only requires one small function in `db.py` plus an entry in
-`db.EXPORT_FORMATS` - `main.py` and the dashboard pick it up automatically.
-CSV flattens the nested entity list into a single `"TYPE:text; ..."` cell
-per record and is written with a UTF-8 BOM so it opens correctly in Excel.
-
-On the dashboard (`/static/records.html`), an **Export ▾** dropdown button
-lists the formats returned by `GET /stats` (`export_formats`); picking one
-downloads the file via `Content-Disposition: attachment`.
 
 ## Choosing models from the Hugging Face Hub
 

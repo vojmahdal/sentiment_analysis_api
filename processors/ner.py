@@ -8,7 +8,10 @@ model, in line with the methodology. The default model is loaded lazily on
 first use so the application starts quickly and only pays the memory cost
 when NER is actually needed. Since V3, callers may instead pick any other
 token-classification model from the Hugging Face Hub at request time; that
-model is loaded and cached via ``processors.model_registry``.
+model is loaded and cached via ``processors.model_registry``. Since V6,
+``extract_entities_batch`` runs NER over many texts in one pipeline call
+instead of one call per text, which is significantly faster for large
+``/ingest`` batches.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from typing import Any
 from processors import model_registry
 
 DEFAULT_MODEL_NAME = "dslim/bert-base-NER"
+_BATCH_SIZE = 16
 _pipeline = None
 _load_error: str | None = None
 
@@ -77,6 +81,52 @@ def extract_entities(text: str, model_id: str | None = None) -> list[dict[str, A
         print(f"[ner] Inference failed: {e}")
         return []
 
+    return _format_entities(raw)
+
+
+def extract_entities_batch(
+    texts: list[str], model_id: str | None = None
+) -> list[list[dict[str, Any]]]:
+    """
+    Batched version of ``extract_entities``: runs NER once over the whole
+    list of texts instead of once per text. The pipeline batches the
+    underlying forward passes internally (``batch_size``), which is much
+    faster for a large ``/ingest`` batch than calling ``extract_entities``
+    in a Python loop. Empty/blank texts are skipped and get an empty list
+    back, at their original position.
+    """
+    results: list[list[dict[str, Any]]] = [[] for _ in texts]
+    valid = [(i, t) for i, t in enumerate(texts) if isinstance(t, str) and t.strip()]
+    if not valid:
+        return results
+
+    if model_id and model_id != DEFAULT_MODEL_NAME:
+        nlp = model_registry.get_pipeline(
+            model_id, task="token-classification", aggregation_strategy="simple"
+        )
+    else:
+        nlp = _get_default_pipeline()
+    if nlp is None:
+        return results
+
+    indices, valid_texts = zip(*valid)
+    try:
+        raw_batch = nlp(list(valid_texts), batch_size=_BATCH_SIZE)
+    except Exception as e:  # pragma: no cover
+        print(f"[ner] Batch inference failed: {e}")
+        return results
+
+    # A single-item input list should still come back as a list-of-one, but
+    # be defensive in case a given pipeline/version collapses it.
+    if len(valid_texts) == 1 and (not raw_batch or not isinstance(raw_batch[0], list)):
+        raw_batch = [raw_batch]
+
+    for idx, raw in zip(indices, raw_batch):
+        results[idx] = _format_entities(raw)
+    return results
+
+
+def _format_entities(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
     for ent in raw:
         entities.append(

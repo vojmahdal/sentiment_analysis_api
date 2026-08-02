@@ -11,6 +11,12 @@ runtime, which suits customer-support conversations where annotated topic
 datasets are usually not available. Since V3, callers may instead pick any
 other zero-shot-classification model from the Hugging Face Hub at request
 time; that model is loaded and cached via ``processors.model_registry``.
+
+Zero-shot classification is the single most expensive step in the pipeline:
+each text is scored against every candidate label as a separate NLI pass
+through a large model. Since V6, ``classify_topic_batch`` scores many texts
+in one pipeline call instead of one call per text, which matters a lot for
+large ``/ingest`` batches, especially on CPU-only hosting.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from typing import Any
 from processors import model_registry
 
 DEFAULT_MODEL_NAME = "facebook/bart-large-mnli"
+_BATCH_SIZE = 16
 
 # Default candidate topics for a customer-support domain.
 DEFAULT_LABELS = [
@@ -98,6 +105,54 @@ def classify_topic(
         print(f"[topics] Inference failed: {e}")
         return {"topic": None, "score": 0.0, "all": []}
 
+    return _format_result(result, top_k)
+
+
+def classify_topic_batch(
+    texts: list[str],
+    labels: list[str] | None = None,
+    top_k: int = 3,
+    model_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Batched version of ``classify_topic``: scores the whole list of texts
+    against the candidate labels in one pipeline call instead of one call
+    per text. Empty/blank texts are skipped and get the empty-result shape
+    back, at their original position.
+    """
+    empty = {"topic": None, "score": 0.0, "all": []}
+    results: list[dict[str, Any]] = [dict(empty) for _ in texts]
+    valid = [(i, t) for i, t in enumerate(texts) if isinstance(t, str) and t.strip()]
+    if not valid:
+        return results
+
+    candidate_labels = labels or DEFAULT_LABELS
+
+    if model_id and model_id != DEFAULT_MODEL_NAME:
+        clf = model_registry.get_pipeline(model_id, task="zero-shot-classification")
+    else:
+        clf = _get_default_pipeline()
+    if clf is None:
+        return results
+
+    indices, valid_texts = zip(*valid)
+    try:
+        raw_batch = clf(list(valid_texts), candidate_labels, multi_label=False, batch_size=_BATCH_SIZE)
+    except Exception as e:  # pragma: no cover
+        print(f"[topics] Batch inference failed: {e}")
+        return results
+
+    # A single-item input list should still come back as a list-of-one, but
+    # be defensive in case a given pipeline/version collapses it to a dict.
+    if isinstance(raw_batch, dict):
+        raw_batch = [raw_batch]
+
+    for idx, raw in zip(indices, raw_batch):
+        results[idx] = _format_result(raw, top_k)
+    return results
+
+
+def _format_result(result: dict[str, Any], top_k: int) -> dict[str, Any]:
     pairs = list(zip(result["labels"], result["scores"]))
     top = pairs[:top_k]
     return {

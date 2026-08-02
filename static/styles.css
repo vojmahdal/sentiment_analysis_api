@@ -299,15 +299,19 @@ textarea:focus {
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.18);
 }
-.modelOption {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.modelSelect {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 8px 10px;
   font-size: 13px;
-  cursor: pointer;
+  outline: none;
 }
-.modelOption input[type="radio"] {
-  accent-color: var(--accent);
+.modelSelect:focus {
+  border-color: rgba(124, 58, 237, 0.55);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.22);
 }
 .modelInput {
   width: 100%;
@@ -319,10 +323,6 @@ textarea:focus {
   padding: 8px 10px;
   font-size: 13px;
   outline: none;
-}
-.modelInput:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 .modelInput:focus {
   border-color: rgba(124, 58, 237, 0.55);
@@ -358,4 +358,34 @@ textarea:focus {
 }
 .dropdownItem:hover {
   background: rgba(124, 58, 237, 0.22);
+}
+.ingestProgress {
+  margin-top: 12px;
+}
+.progressBar {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  appearance: none;
+}
+.progressBar::-webkit-progress-bar {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+}
+.progressBar::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.progressBar::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 999px;
+}
+.timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
+  min-width: 56px;
+  text-align: right;
 }

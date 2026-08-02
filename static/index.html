@@ -81,6 +81,15 @@
           <button id="ingestBtn" class="btn" type="button">Ingest file</button>
           <span id="ingestStatus" class="status" aria-live="polite"></span>
         </div>
+
+        <div id="ingestProgress" class="ingestProgress" hidden>
+          <div class="row">
+            <progress id="ingestProgressBar" class="progressBar" value="0" max="1"></progress>
+            <span id="ingestTimer" class="timer">0.0 s</span>
+          </div>
+          <div id="ingestProgressLabel" class="sub small">Zpracováno 0 z 0</div>
+        </div>
+
         <pre id="ingestError" class="error" hidden></pre>
       </section>
 
