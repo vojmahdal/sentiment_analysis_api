@@ -16,6 +16,17 @@
         </p>
       </header>
 
+      <!-- Engine: local BERT pipeline, or a configured LLM provider -->
+      <section class="card">
+        <span class="label">Engine</span>
+        <select id="engineSelect" class="modelSelect"></select>
+        <p id="llmEngineNote" class="sub small" hidden>
+          Anonymization happens locally, just like with the local models,
+          before the pseudonymized text is sent through the API. The chosen
+          model then determines sentiment, entities and topic in one call.
+        </p>
+      </section>
+
       <!-- Single message analysis -->
       <section class="card">
         <label class="label" for="text">Message</label>
@@ -47,6 +58,10 @@
         </div>
 
         <div id="result" class="result" hidden>
+          <div id="engineRow" class="resultRow" hidden>
+            <span class="k">Engine</span>
+            <span id="engineInfo" class="v"></span>
+          </div>
           <div class="resultRow">
             <span class="k">Sentiment</span>
             <span id="sentiment" class="v"></span>
@@ -87,7 +102,7 @@
             <progress id="ingestProgressBar" class="progressBar" value="0" max="1"></progress>
             <span id="ingestTimer" class="timer">0.0 s</span>
           </div>
-          <div id="ingestProgressLabel" class="sub small">Zpracováno 0 z 0</div>
+          <div id="ingestProgressLabel" class="sub small">Processed 0 of 0</div>
         </div>
 
         <pre id="ingestError" class="error" hidden></pre>

@@ -69,6 +69,23 @@ def _get_connection() -> sqlite3.Connection:
         )
         """
     )
+    # Since V8: which engine produced the record ('local' or 'llm') and,
+    # for the LLM engine, which provider/model answered plus its latency and
+    # cost. Added via ALTER TABLE so existing conversation_logs.db files from
+    # earlier versions keep working; SQLite has no "ADD COLUMN IF NOT
+    # EXISTS", so a duplicate-column error on an already-migrated database
+    # is expected and ignored.
+    for column_def in (
+        "engine TEXT DEFAULT 'local'",
+        "provider TEXT",
+        "model TEXT",
+        "latency_ms INTEGER",
+        "cost_usd REAL",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE records ADD COLUMN {column_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -85,6 +102,14 @@ def save_record(result: dict[str, Any], source: str = "single") -> None:
     Persist one pipeline result. The original text is hashed (not stored);
     the anonymized text is stored. If the result does not already contain an
     anonymized text, it is anonymized here as a safeguard.
+
+    Since V8, ``result`` may come from either engine: the local BERT
+    pipeline (no ``engine``/``provider`` keys - stored as ``engine="local"``,
+    ``provider``/``model``/``latency_ms``/``cost_usd`` left ``NULL``) or the
+    LLM pipeline (``engine="llm"``, plus ``provider``, ``model``,
+    ``latency_ms``, ``cost_usd``). Both land in the same ``records`` table
+    and are indistinguishable in the schema except for these columns, so the
+    dashboard can list and export them together.
     """
     original_text = result.get("text", "") or ""
     anonymized = result.get("anonymized_text") or anonymizer.anonymize_text(original_text)
@@ -98,8 +123,9 @@ def save_record(result: dict[str, Any], source: str = "single") -> None:
             INSERT INTO records (
                 created_at, original_hash, anonymized_text, entities,
                 topic, topic_score, sentiment, sentiment_score,
-                conversation_id, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                conversation_id, source,
+                engine, provider, model, latency_ms, cost_usd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _utcnow(),
@@ -112,25 +138,70 @@ def save_record(result: dict[str, Any], source: str = "single") -> None:
                 result.get("sentiment_score"),
                 result.get("conversation_id"),
                 source,
+                result.get("engine") or "local",
+                result.get("provider"),
+                result.get("model"),
+                result.get("latency_ms"),
+                result.get("cost_usd"),
             ),
         )
         _db_conn.commit()
 
 
-def get_records(limit: int = 100) -> list[dict[str, Any]]:
-    """Return the most recent records (anonymized only)."""
+def _build_filter(
+    engine: str | None = None,
+    topic: str | None = None,
+    sentiment: str | None = None,
+) -> tuple[str, tuple[Any, ...]]:
+    """
+    Shared ``WHERE`` clause for ``get_records``/``_fetch_export_rows``:
+    optionally narrow to one engine (``"local"`` | ``"llm"``), one topic, or
+    one sentiment label. Any combination may be used together; omitted
+    filters are simply not applied.
+    """
+    conditions = []
+    params: tuple[Any, ...] = ()
+    if engine:
+        conditions.append("engine = ?")
+        params += (engine,)
+    if topic:
+        conditions.append("topic = ?")
+        params += (topic,)
+    if sentiment:
+        conditions.append("sentiment = ?")
+        params += (sentiment,)
+    clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    return clause, params
+
+
+def get_records(
+    limit: int = 100,
+    engine: str | None = None,
+    topic: str | None = None,
+    sentiment: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return the most recent records (anonymized only).
+
+    ``engine`` optionally filters to ``"local"`` (BERT pipeline) or ``"llm"``
+    (any provider); ``topic``/``sentiment`` filter to an exact label. Any
+    combination of the three may be used together; omitted/``None`` means
+    "don't filter on this".
+    """
+    where_clause, where_params = _build_filter(engine, topic, sentiment)
+    query = f"""
+        SELECT id, created_at, anonymized_text, entities,
+               topic, topic_score, sentiment, sentiment_score,
+               conversation_id, source,
+               engine, provider, model, latency_ms, cost_usd
+        FROM records{where_clause}
+        ORDER BY id DESC
+        LIMIT ?
+    """
+    params = where_params + (limit,)
+
     with _db_lock:
-        cur = _db_conn.execute(
-            """
-            SELECT id, created_at, anonymized_text, entities,
-                   topic, topic_score, sentiment, sentiment_score,
-                   conversation_id, source
-            FROM records
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        cur = _db_conn.execute(query, params)
         rows = cur.fetchall()
 
     records = []
@@ -151,6 +222,11 @@ def get_records(limit: int = 100) -> list[dict[str, Any]]:
                 "sentiment_score": r[7],
                 "conversation_id": r[8],
                 "source": r[9],
+                "engine": r[10],
+                "provider": r[11],
+                "model": r[12],
+                "latency_ms": r[13],
+                "cost_usd": r[14],
             }
         )
     return records
@@ -174,20 +250,25 @@ def stats() -> dict[str, Any]:
     }
 
 
-def _fetch_export_rows(limit: int | None) -> list[tuple[Any, ...]]:
+def _fetch_export_rows(
+    limit: int | None,
+    engine: str | None = None,
+    topic: str | None = None,
+    sentiment: str | None = None,
+) -> list[tuple[Any, ...]]:
     """Raw rows (most recent first) shared by every export format."""
-    query = """
+    where_clause, params = _build_filter(engine, topic, sentiment)
+    query = f"""
         SELECT id, created_at, anonymized_text, entities,
                topic, topic_score, sentiment, sentiment_score,
-               conversation_id, source
-        FROM records
+               conversation_id, source,
+               engine, provider, model, latency_ms, cost_usd
+        FROM records{where_clause}
         ORDER BY id DESC
     """
     if limit is not None:
         query += " LIMIT ?"
-        params: tuple[Any, ...] = (limit,)
-    else:
-        params = ()
+        params += (limit,)
 
     with _db_lock:
         return _db_conn.execute(query, params).fetchall()
@@ -216,6 +297,15 @@ def _export_xml(rows: list[tuple[Any, ...]]) -> bytes:
         )
         ET.SubElement(record_el, "conversation_id").text = r[8]
         ET.SubElement(record_el, "source").text = r[9]
+        ET.SubElement(record_el, "engine").text = r[10]
+        ET.SubElement(record_el, "provider").text = r[11]
+        ET.SubElement(record_el, "model").text = r[12]
+        ET.SubElement(record_el, "latency_ms").text = (
+            str(r[13]) if r[13] is not None else None
+        )
+        ET.SubElement(record_el, "cost_usd").text = (
+            str(r[14]) if r[14] is not None else None
+        )
 
         entities_el = ET.SubElement(record_el, "entities")
         for ent in _row_entities(r):
@@ -242,6 +332,11 @@ def _export_json(rows: list[tuple[Any, ...]]) -> bytes:
             "sentiment_score": r[7],
             "conversation_id": r[8],
             "source": r[9],
+            "engine": r[10],
+            "provider": r[11],
+            "model": r[12],
+            "latency_ms": r[13],
+            "cost_usd": r[14],
         }
         for r in rows
     ]
@@ -264,6 +359,11 @@ def _export_csv(rows: list[tuple[Any, ...]]) -> bytes:
             "sentiment_score",
             "conversation_id",
             "source",
+            "engine",
+            "provider",
+            "model",
+            "latency_ms",
+            "cost_usd",
             "entities",
         ]
     )
@@ -271,26 +371,35 @@ def _export_csv(rows: list[tuple[Any, ...]]) -> bytes:
         entities_cell = "; ".join(
             f"{ent.get('type', '')}:{ent.get('text', '')}" for ent in _row_entities(r)
         )
-        writer.writerow([r[0], r[1], r[2], r[4], r[5], r[6], r[7], r[8], r[9], entities_cell])
+        writer.writerow(
+            [r[0], r[1], r[2], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14], entities_cell]
+        )
 
     # utf-8-sig (BOM) so Excel opens the file with correct encoding.
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def export_records(fmt: str, limit: int | None = None) -> tuple[bytes, str]:
+def export_records(
+    fmt: str,
+    limit: int | None = None,
+    engine: str | None = None,
+    topic: str | None = None,
+    sentiment: str | None = None,
+) -> tuple[bytes, str]:
     """
     Export stored (anonymized) records in the given format.
 
     Returns ``(content_bytes, media_type)``. Raises ``ValueError`` for an
     unsupported ``fmt`` so the API layer can turn it into a clean 400
-    response. ``limit`` caps the number of most recent records exported;
-    ``None`` exports everything.
+    response. ``limit`` caps the number of most recent records exported
+    (``None`` exports everything); ``engine``/``topic``/``sentiment``
+    optionally filter, same as ``get_records``.
     """
     fmt = (fmt or "xml").strip().lower()
     if fmt not in EXPORT_FORMATS:
         supported = ", ".join(sorted(EXPORT_FORMATS))
         raise ValueError(f"Unsupported export format '{fmt}'. Supported: {supported}.")
 
-    rows = _fetch_export_rows(limit)
+    rows = _fetch_export_rows(limit, engine, topic, sentiment)
     exporter = {"xml": _export_xml, "json": _export_json, "csv": _export_csv}[fmt]
     return exporter(rows), EXPORT_FORMATS[fmt]

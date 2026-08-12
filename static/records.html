@@ -24,6 +24,29 @@
         <div class="row">
           <button id="reloadBtn" class="btn" type="button">Reload</button>
 
+          <label class="row" style="gap: 6px">
+            <span class="label" style="margin: 0">Engine</span>
+            <select id="engineFilter" class="modelSelect">
+              <option value="">All</option>
+              <option value="local">Local (BERT)</option>
+              <option value="llm">LLM</option>
+            </select>
+          </label>
+
+          <label class="row" style="gap: 6px">
+            <span class="label" style="margin: 0">Topic</span>
+            <select id="topicFilter" class="modelSelect">
+              <option value="">All</option>
+            </select>
+          </label>
+
+          <label class="row" style="gap: 6px">
+            <span class="label" style="margin: 0">Sentiment</span>
+            <select id="sentimentFilter" class="modelSelect">
+              <option value="">All</option>
+            </select>
+          </label>
+
           <div class="dropdown" id="exportDropdown">
             <button
               id="exportBtn"
@@ -53,6 +76,7 @@
                 <th>Topic</th>
                 <th>Sentiment</th>
                 <th>Entities</th>
+                <th>Engine</th>
                 <th>Source</th>
               </tr>
             </thead>

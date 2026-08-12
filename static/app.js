@@ -9,6 +9,12 @@ const entitiesEl = document.getElementById("entities");
 const anonEl = document.getElementById("anon");
 const errorEl = document.getElementById("error");
 
+const engineSelectEl = document.getElementById("engineSelect");
+const llmEngineNoteEl = document.getElementById("llmEngineNote");
+const modelPickersEl = document.querySelector(".modelPickers");
+const engineRowEl = document.getElementById("engineRow");
+const engineInfoEl = document.getElementById("engineInfo");
+
 const fileEl = document.getElementById("file");
 const ingestBtn = document.getElementById("ingestBtn");
 const ingestStatusEl = document.getElementById("ingestStatus");
@@ -103,6 +109,54 @@ async function loadModelPickers() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Engine selector: "local" (BERT pipeline, existing 3 model dropdowns) or
+// one of the configured LLM providers (single call determines sentiment,
+// entities and topic together; the 3 dropdowns are hidden in that case).
+// ---------------------------------------------------------------------------
+function isLocalEngine() {
+  return !engineSelectEl || engineSelectEl.value === "local";
+}
+
+function applyEngineVisibility() {
+  const local = isLocalEngine();
+  if (modelPickersEl) modelPickersEl.hidden = !local;
+  if (llmEngineNoteEl) llmEngineNoteEl.hidden = local;
+}
+
+async function loadEngines() {
+  if (!engineSelectEl) return;
+  engineSelectEl.innerHTML = "";
+
+  let engines = [{ id: "local", label: "Local models (BERT)", available: true }];
+  try {
+    const res = await fetch("/engines");
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.engines) && data.engines.length) {
+        engines = data.engines;
+      }
+    }
+  } catch (e) {
+    // fall back to local-only option above
+  }
+
+  for (const engine of engines) {
+    const opt = document.createElement("option");
+    opt.value = engine.id;
+    opt.textContent = engine.available === false ? `${engine.label} (missing API key)` : engine.label;
+    opt.disabled = engine.available === false;
+    engineSelectEl.appendChild(opt);
+  }
+
+  engineSelectEl.value = "local";
+  applyEngineVisibility();
+}
+
+if (engineSelectEl) {
+  engineSelectEl.addEventListener("change", applyEngineVisibility);
+}
+
 function setStatus(msg) {
   statusEl.textContent = msg || "";
 }
@@ -119,6 +173,19 @@ function sentimentClass(label) {
 }
 
 function renderResult(data) {
+  // engine (only present when an LLM engine was used)
+  if (data.engine && data.engine !== "local") {
+    const parts = [data.provider || data.engine];
+    if (data.model) parts.push(data.model);
+    if (typeof data.latency_ms === "number") parts.push(`${data.latency_ms} ms`);
+    if (typeof data.cost_usd === "number") parts.push(`$${data.cost_usd.toFixed(4)}`);
+    engineInfoEl.textContent = parts.join(" · ");
+    engineRowEl.hidden = false;
+  } else {
+    engineInfoEl.textContent = "";
+    engineRowEl.hidden = true;
+  }
+
   // sentiment
   const sLabel = data.sentiment ?? "—";
   const sScore =
@@ -168,9 +235,11 @@ async function analyze() {
   analyzeBtn.disabled = true;
   setStatus("Analyzing…");
 
-  const sentimentModel = modelPickers.sentiment?.getValue() ?? null;
-  const nerModel = modelPickers.ner?.getValue() ?? null;
-  const topicModel = modelPickers.topics?.getValue() ?? null;
+  const engine = engineSelectEl ? engineSelectEl.value : "local";
+  const local = isLocalEngine();
+  const sentimentModel = local ? modelPickers.sentiment?.getValue() ?? null : null;
+  const nerModel = local ? modelPickers.ner?.getValue() ?? null : null;
+  const topicModel = local ? modelPickers.topics?.getValue() ?? null : null;
 
   try {
     const res = await fetch("/analyze", {
@@ -178,6 +247,7 @@ async function analyze() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
+        engine,
         sentiment_model: sentimentModel,
         ner_model: nerModel,
         topic_model: topicModel,
@@ -224,7 +294,7 @@ function startIngestTimer(startedAt) {
 function updateIngestProgress(processed, total) {
   ingestProgressBarEl.max = Math.max(total, 1);
   ingestProgressBarEl.value = processed;
-  ingestProgressLabelEl.textContent = `Zpracováno ${processed} z ${total}`;
+  ingestProgressLabelEl.textContent = `Processed ${processed} of ${total}`;
 }
 
 function finishIngest(message, isError) {
@@ -244,25 +314,25 @@ async function pollIngestJob(jobId) {
       res = await fetch(`/ingest/status/${jobId}`);
       status = await res.json();
     } catch (e) {
-      finishIngest(`Ztraceno spojení se serverem: ${e?.message || e}`, true);
+      finishIngest(`Lost connection to the server: ${e?.message || e}`, true);
       return;
     }
 
     if (!res.ok) {
-      finishIngest(status?.detail || `Neznámá úloha (HTTP ${res.status}).`, true);
+      finishIngest(status?.detail || `Unknown job (HTTP ${res.status}).`, true);
       return;
     }
 
     updateIngestProgress(status.processed, status.total);
 
     if (status.status === "done") {
-      const note = status.result.truncated ? " (dávka omezena na 200 zpráv)" : "";
+      const note = status.result.truncated ? " (batch capped at 200 messages)" : "";
       finishIngest(
-        `Zpracováno ${status.result.processed}, uloženo ${status.result.stored}${note}. Viz Records.`,
+        `Processed ${status.result.processed}, stored ${status.result.stored}${note}. See Records.`,
         false
       );
     } else if (status.status === "error") {
-      finishIngest(`Zpracování selhalo: ${status.error}`, true);
+      finishIngest(`Processing failed: ${status.error}`, true);
     }
   }, 1000);
 }
@@ -277,19 +347,23 @@ async function ingest() {
   }
 
   ingestBtn.disabled = true;
-  ingestStatusEl.textContent = "Nahrávání…";
+  ingestStatusEl.textContent = "Uploading…";
   ingestProgressEl.hidden = false;
   updateIngestProgress(0, 0);
 
   try {
     const form = new FormData();
     form.append("file", file);
-    const sentimentModel = modelPickers.sentiment?.getValue();
-    const nerModel = modelPickers.ner?.getValue();
-    const topicModel = modelPickers.topics?.getValue();
-    if (sentimentModel) form.append("sentiment_model", sentimentModel);
-    if (nerModel) form.append("ner_model", nerModel);
-    if (topicModel) form.append("topic_model", topicModel);
+    const engine = engineSelectEl ? engineSelectEl.value : "local";
+    form.append("engine", engine);
+    if (isLocalEngine()) {
+      const sentimentModel = modelPickers.sentiment?.getValue();
+      const nerModel = modelPickers.ner?.getValue();
+      const topicModel = modelPickers.topics?.getValue();
+      if (sentimentModel) form.append("sentiment_model", sentimentModel);
+      if (nerModel) form.append("ner_model", nerModel);
+      if (topicModel) form.append("topic_model", topicModel);
+    }
     const res = await fetch("/ingest", { method: "POST", body: form });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -297,7 +371,7 @@ async function ingest() {
       throw new Error(`API error (${res.status})${detail}`);
     }
 
-    ingestStatusEl.textContent = "Zpracovávání…";
+    ingestStatusEl.textContent = "Processing…";
     updateIngestProgress(0, data.total);
     startIngestTimer(Date.now());
     pollIngestJob(data.job_id);
@@ -322,3 +396,4 @@ textEl.addEventListener("keydown", (e) => {
 ingestBtn.addEventListener("click", ingest);
 
 loadModelPickers();
+loadEngines();

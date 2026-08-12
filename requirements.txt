@@ -6,3 +6,9 @@ torch
 presidio-analyzer
 presidio-anonymizer
 spacy
+
+# volitelná LLM větev (Claude / Gemini / OpenAI) - viz llm_client/ a .env.example
+anthropic
+openai
+google-generativeai
+python-dotenv

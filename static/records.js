@@ -8,6 +8,9 @@ const statsEl = document.getElementById("stats");
 
 const exportBtn = document.getElementById("exportBtn");
 const exportMenu = document.getElementById("exportMenu");
+const engineFilterEl = document.getElementById("engineFilter");
+const topicFilterEl = document.getElementById("topicFilter");
+const sentimentFilterEl = document.getElementById("sentimentFilter");
 
 function setStatus(msg) {
   statusEl.textContent = msg || "";
@@ -47,7 +50,11 @@ exportMenu.addEventListener("click", (e) => {
   const fmt = e.target.dataset.format;
   if (!fmt) return;
   setExportMenuOpen(false);
-  window.location.href = `/records/export?format=${encodeURIComponent(fmt)}`;
+  const params = new URLSearchParams({ format: fmt });
+  if (engineFilterEl.value) params.set("engine", engineFilterEl.value);
+  if (topicFilterEl.value) params.set("topic", topicFilterEl.value);
+  if (sentimentFilterEl.value) params.set("sentiment", sentimentFilterEl.value);
+  window.location.href = `/records/export?${params.toString()}`;
 });
 
 document.addEventListener("click", () => setExportMenuOpen(false));
@@ -80,6 +87,36 @@ function renderStats(stats) {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Topic/sentiment filter dropdowns: rebuilt from the labels /stats reports
+// as actually in use, so they never list a topic/sentiment with 0 records.
+// The current selection is preserved across a rebuild when still valid.
+// ---------------------------------------------------------------------------
+function populateFilterOptions(selectEl, keys) {
+  const current = selectEl.value;
+  selectEl.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = "All";
+  selectEl.appendChild(allOpt);
+  for (const key of keys) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = key;
+    selectEl.appendChild(opt);
+  }
+  if (keys.includes(current)) selectEl.value = current;
+}
+
+function engineLabel(item) {
+  if (!item.provider) return "local";
+  const parts = [item.provider];
+  if (item.model) parts.push(item.model);
+  if (typeof item.latency_ms === "number") parts.push(`${item.latency_ms} ms`);
+  if (typeof item.cost_usd === "number") parts.push(`$${item.cost_usd.toFixed(4)}`);
+  return parts.join(" · ");
+}
+
 function renderRows(items) {
   bodyEl.innerHTML = "";
   for (const item of items) {
@@ -109,6 +146,10 @@ function renderRows(items) {
       : "—";
     tr.appendChild(tdEnt);
 
+    const tdEngine = document.createElement("td");
+    tdEngine.textContent = engineLabel(item);
+    tr.appendChild(tdEngine);
+
     const tdSrc = document.createElement("td");
     tdSrc.textContent = item.source || "";
     tr.appendChild(tdSrc);
@@ -121,8 +162,13 @@ async function load() {
   showError("");
   setStatus("Loading…");
   try {
+    const recParams = new URLSearchParams({ limit: "100" });
+    if (engineFilterEl.value) recParams.set("engine", engineFilterEl.value);
+    if (topicFilterEl.value) recParams.set("topic", topicFilterEl.value);
+    if (sentimentFilterEl.value) recParams.set("sentiment", sentimentFilterEl.value);
+
     const [recRes, statRes] = await Promise.all([
-      fetch("/records?limit=100"),
+      fetch(`/records?${recParams.toString()}`),
       fetch("/stats"),
     ]);
     const records = await recRes.json().catch(() => null);
@@ -134,8 +180,16 @@ async function load() {
 
     renderStats(stats);
     buildExportMenu(stats?.export_formats || ["xml", "json", "csv"]);
+    populateFilterOptions(topicFilterEl, Object.keys(stats?.by_topic || {}));
+    populateFilterOptions(sentimentFilterEl, Object.keys(stats?.by_sentiment || {}));
 
+    const activeFilters = [engineFilterEl.value, topicFilterEl.value, sentimentFilterEl.value].filter(
+      Boolean
+    );
     if (!Array.isArray(records) || records.length === 0) {
+      emptyEl.textContent = activeFilters.length
+        ? `No records match the current filter (${activeFilters.join(", ")}).`
+        : "No records yet. Analyze a message or ingest a file first.";
       emptyEl.hidden = false;
       tableWrapper.hidden = true;
       setStatus("No records yet.");
@@ -153,4 +207,7 @@ async function load() {
 }
 
 reloadBtn.addEventListener("click", load);
+engineFilterEl.addEventListener("change", load);
+topicFilterEl.addEventListener("change", load);
+sentimentFilterEl.addEventListener("change", load);
 load();
