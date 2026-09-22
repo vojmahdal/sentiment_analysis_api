@@ -61,6 +61,36 @@ def _fake_llm_pipeline(*_args, **_kwargs):
     return LLMPipeline(provider="anthropic", client=FakeLLMClient())
 
 
+class FakeGoogleLLMClient(LLMClient):
+    """Second fake provider, distinct from FakeLLMClient's "anthropic", so
+    the `provider` filter (db.py/main.py) can be tested against >=2 real
+    values instead of a single hardcoded one."""
+
+    def __init__(self, payload=None):
+        self.payload = payload or {
+            "sentiment": {"label": "neutral", "score": 0.5},
+            "entities": [],
+            "topics": [{"label": "other", "score": 0.4}],
+            "pii": [],
+            "pseudonymized_text": "Dekuji za info.",
+        }
+
+    def analyze(self, text):
+        meta = CallMeta(
+            latency_ms=140,
+            tokens_in=12,
+            tokens_out=6,
+            cost_usd=0.0005,
+            model="fake-gemini",
+            provider="google",
+        )
+        return self.payload, meta
+
+
+def _fake_llm_pipeline_google(*_args, **_kwargs):
+    return LLMPipeline(provider="google", client=FakeGoogleLLMClient())
+
+
 def test_llm_result_to_response_maps_analysis_result():
     result = AnalysisResult(
         engine="llm",
@@ -274,3 +304,50 @@ def test_records_export_respects_topic_and_sentiment_filters():
 
     rows = _json.loads(resp.content)
     assert all(r["topic"] == "billing and payments" and r["sentiment"] == "negative" for r in rows)
+
+
+def test_records_can_be_filtered_by_provider():
+    with patch.object(main, "LLMPipeline", side_effect=_fake_llm_pipeline):
+        client.post(
+            "/analyze", json={"text": "provider filter anthropic", "engine": "anthropic"}
+        )
+
+    with patch.object(main, "LLMPipeline", side_effect=_fake_llm_pipeline_google):
+        client.post(
+            "/analyze", json={"text": "provider filter google", "engine": "google"}
+        )
+
+    anthropic_records = client.get("/records?provider=anthropic").json()
+    assert all(r["provider"] == "anthropic" for r in anthropic_records)
+    assert any(r["model"] == "fake-claude" for r in anthropic_records)
+
+    google_records = client.get("/records?provider=google").json()
+    assert all(r["provider"] == "google" for r in google_records)
+    assert any(r["model"] == "fake-gemini" for r in google_records)
+
+    # the two provider filters must not leak into each other's results
+    anthropic_models = {r["model"] for r in anthropic_records}
+    google_models = {r["model"] for r in google_records}
+    assert "fake-gemini" not in anthropic_models
+    assert "fake-claude" not in google_models
+
+
+def test_records_invalid_provider_filter_returns_clean_400():
+    resp = client.get("/records?provider=bogus")
+    assert resp.status_code == 400
+    assert "provider" in resp.json()["detail"].lower()
+
+
+def test_records_export_respects_provider_filter():
+    resp = client.get("/records/export?format=json&provider=google")
+    assert resp.status_code == 200, resp.text
+    import json as _json
+
+    rows = _json.loads(resp.content)
+    assert all(r["provider"] == "google" for r in rows)
+
+
+def test_stats_reports_by_provider_breakdown():
+    stats = client.get("/stats").json()
+    assert stats["by_provider"]["anthropic"] >= 1
+    assert stats["by_provider"]["google"] >= 1

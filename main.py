@@ -485,12 +485,29 @@ def _validate_engine_filter(engine: str | None) -> str | None:
     return engine
 
 
+def _validate_provider_filter(provider: str | None) -> str | None:
+    """
+    Shared validation for the ``provider`` filter: one of the configured LLM
+    providers, or omitted/``None`` for all. Only local-independent - a
+    local-engine record's ``provider`` column is always ``NULL``, so this
+    filter is only useful combined with ``engine="llm"``.
+    """
+    if provider is not None and provider not in LLM_PROVIDERS:
+        supported = ", ".join(sorted(LLM_PROVIDERS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid 'provider' filter. Use one of: {supported}, or omit it.",
+        )
+    return provider
+
+
 @app.get("/records")
 def records(
     limit: int = 100,
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ):
     """
     Return recent stored records (anonymized only).
@@ -499,11 +516,16 @@ def records(
     ``"llm"`` (any provider). ``topic``/``sentiment`` optionally filter to
     an exact label (see ``GET /stats`` for the labels actually in use - a
     custom sentiment/topic model can in principle produce others, so these
-    aren't restricted to a fixed set). Any combination may be used together;
-    omitted filters simply don't narrow the result.
+    aren't restricted to a fixed set). ``provider`` optionally filters to one
+    LLM provider (e.g. to separate results from Claude/Gemini/GPT tested on
+    the same batch) - combine it with ``engine=llm``. Any combination may be
+    used together; omitted filters simply don't narrow the result.
     """
     engine = _validate_engine_filter(engine)
-    return db.get_records(limit=limit, engine=engine, topic=topic, sentiment=sentiment)
+    provider = _validate_provider_filter(provider)
+    return db.get_records(
+        limit=limit, engine=engine, topic=topic, sentiment=sentiment, provider=provider
+    )
 
 
 @app.get("/records/export")
@@ -513,17 +535,20 @@ def export_records(
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ):
     """
     Export stored (anonymized) records. ``format`` is one of the keys in
     ``db.EXPORT_FORMATS`` (currently ``xml``, ``json``, ``csv``).
-    ``engine``/``topic``/``sentiment`` optionally filter, same as
-    ``/records``.
+    ``engine``/``topic``/``sentiment``/``provider`` optionally filter, same
+    as ``/records``.
     """
     engine = _validate_engine_filter(engine)
+    provider = _validate_provider_filter(provider)
     try:
         content, media_type = db.export_records(
-            format, limit=limit, engine=engine, topic=topic, sentiment=sentiment
+            format, limit=limit, engine=engine, topic=topic, sentiment=sentiment,
+            provider=provider,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

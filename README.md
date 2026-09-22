@@ -57,7 +57,7 @@ ingest → NER → topic classification → sentiment → anonymization → stor
 | POST | `/predict` | Sentiment only (backward compatible, local models only) |
 | POST | `/ingest` | Start a background batch-ingest job for a CSV/JSON file, returns a `job_id` (`engine` field, V8) |
 | GET | `/ingest/status/{job_id}` | Progress (and, once done, the result) of a background ingest job |
-| GET | `/records` | Recent stored (anonymized) records, local and LLM engine alike; optional `?engine=local\|llm`, `?topic=`, `?sentiment=` filters (V8) |
+| GET | `/records` | Recent stored (anonymized) records, local and LLM engine alike; optional `?engine=local\|llm`, `?topic=`, `?sentiment=`, `?provider=` filters (V8) |
 | GET | `/records/export` | Stored records exported as XML, JSON or CSV (`?format=`), same optional filters (V8) |
 | GET | `/stats` | Aggregate statistics (includes the list of supported export formats) |
 
@@ -224,10 +224,13 @@ same shape the local pipeline already returns and saved via the same
 `engine`/`provider`/`model`/`latency_ms`/`cost_usd` (`NULL` for local-engine
 records). They therefore show up together in `GET /records`, the
 `/records.html` dashboard (with an added **Engine** column and filter
-dropdowns for **Engine**, **Topic** and **Sentiment**) and every export
-format - `/records` and `/records/export` both accept optional
-`?engine=local|llm`, `?topic=` and `?sentiment=` query params, usable
-together, to narrow the list down - instead of living in a separate
+dropdowns for **Engine**, **Topic**, **Sentiment** and **Provider**) and
+every export format - `/records` and `/records/export` both accept
+optional `?engine=local|llm`, `?topic=`, `?sentiment=` and `?provider=`
+query params, usable together, to narrow the list down (`?provider=`
+distinguishes individual LLM providers - `anthropic`/`openai`/`google` -
+which `?engine=llm` otherwise lumps together, useful when comparing them
+side by side) - instead of living in a separate
 database only reachable through a dedicated comparison view. A systematic
 BERT-vs-LLM comparison
 (agreement, entity-level P/R/F1, PII leak rate, latency/cost) was

@@ -152,12 +152,15 @@ def _build_filter(
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ) -> tuple[str, tuple[Any, ...]]:
     """
     Shared ``WHERE`` clause for ``get_records``/``_fetch_export_rows``:
-    optionally narrow to one engine (``"local"`` | ``"llm"``), one topic, or
-    one sentiment label. Any combination may be used together; omitted
-    filters are simply not applied.
+    optionally narrow to one engine (``"local"`` | ``"llm"``), one topic, one
+    sentiment label, or one LLM provider (``"anthropic"`` | ``"google"`` |
+    ``"openai"`` - ``NULL`` for local-engine records, so this filter is only
+    meaningful together with ``engine="llm"``). Any combination may be used
+    together; omitted filters are simply not applied.
     """
     conditions = []
     params: tuple[Any, ...] = ()
@@ -170,6 +173,9 @@ def _build_filter(
     if sentiment:
         conditions.append("sentiment = ?")
         params += (sentiment,)
+    if provider:
+        conditions.append("provider = ?")
+        params += (provider,)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     return clause, params
 
@@ -179,16 +185,19 @@ def get_records(
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return the most recent records (anonymized only).
 
     ``engine`` optionally filters to ``"local"`` (BERT pipeline) or ``"llm"``
-    (any provider); ``topic``/``sentiment`` filter to an exact label. Any
-    combination of the three may be used together; omitted/``None`` means
-    "don't filter on this".
+    (any provider); ``topic``/``sentiment`` filter to an exact label;
+    ``provider`` filters to one LLM provider (``"anthropic"``/``"google"``/
+    ``"openai"``) - use it together with ``engine="llm"`` to separate results
+    from different providers tested on the same batch. Any combination may
+    be used together; omitted/``None`` means "don't filter on this".
     """
-    where_clause, where_params = _build_filter(engine, topic, sentiment)
+    where_clause, where_params = _build_filter(engine, topic, sentiment, provider)
     query = f"""
         SELECT id, created_at, anonymized_text, entities,
                topic, topic_score, sentiment, sentiment_score,
@@ -233,7 +242,7 @@ def get_records(
 
 
 def stats() -> dict[str, Any]:
-    """Aggregate statistics for the dashboard (counts by sentiment / topic)."""
+    """Aggregate statistics for the dashboard (counts by sentiment / topic / provider)."""
     with _db_lock:
         total = _db_conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         by_sentiment = _db_conn.execute(
@@ -242,11 +251,15 @@ def stats() -> dict[str, Any]:
         by_topic = _db_conn.execute(
             "SELECT topic, COUNT(*) FROM records GROUP BY topic ORDER BY COUNT(*) DESC LIMIT 10"
         ).fetchall()
+        by_provider = _db_conn.execute(
+            "SELECT provider, COUNT(*) FROM records WHERE provider IS NOT NULL GROUP BY provider"
+        ).fetchall()
 
     return {
         "total": total,
         "by_sentiment": {(s or "unknown"): c for s, c in by_sentiment},
         "by_topic": {(t or "unknown"): c for t, c in by_topic},
+        "by_provider": dict(by_provider),
     }
 
 
@@ -255,9 +268,10 @@ def _fetch_export_rows(
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ) -> list[tuple[Any, ...]]:
     """Raw rows (most recent first) shared by every export format."""
-    where_clause, params = _build_filter(engine, topic, sentiment)
+    where_clause, params = _build_filter(engine, topic, sentiment, provider)
     query = f"""
         SELECT id, created_at, anonymized_text, entities,
                topic, topic_score, sentiment, sentiment_score,
@@ -385,6 +399,7 @@ def export_records(
     engine: str | None = None,
     topic: str | None = None,
     sentiment: str | None = None,
+    provider: str | None = None,
 ) -> tuple[bytes, str]:
     """
     Export stored (anonymized) records in the given format.
@@ -392,14 +407,14 @@ def export_records(
     Returns ``(content_bytes, media_type)``. Raises ``ValueError`` for an
     unsupported ``fmt`` so the API layer can turn it into a clean 400
     response. ``limit`` caps the number of most recent records exported
-    (``None`` exports everything); ``engine``/``topic``/``sentiment``
-    optionally filter, same as ``get_records``.
+    (``None`` exports everything); ``engine``/``topic``/``sentiment``/
+    ``provider`` optionally filter, same as ``get_records``.
     """
     fmt = (fmt or "xml").strip().lower()
     if fmt not in EXPORT_FORMATS:
         supported = ", ".join(sorted(EXPORT_FORMATS))
         raise ValueError(f"Unsupported export format '{fmt}'. Supported: {supported}.")
 
-    rows = _fetch_export_rows(limit, engine, topic, sentiment)
+    rows = _fetch_export_rows(limit, engine, topic, sentiment, provider)
     exporter = {"xml": _export_xml, "json": _export_json, "csv": _export_csv}[fmt]
     return exporter(rows), EXPORT_FORMATS[fmt]

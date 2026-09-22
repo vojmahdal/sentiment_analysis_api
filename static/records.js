@@ -11,6 +11,7 @@ const exportMenu = document.getElementById("exportMenu");
 const engineFilterEl = document.getElementById("engineFilter");
 const topicFilterEl = document.getElementById("topicFilter");
 const sentimentFilterEl = document.getElementById("sentimentFilter");
+const providerFilterEl = document.getElementById("providerFilter");
 
 function setStatus(msg) {
   statusEl.textContent = msg || "";
@@ -54,6 +55,7 @@ exportMenu.addEventListener("click", (e) => {
   if (engineFilterEl.value) params.set("engine", engineFilterEl.value);
   if (topicFilterEl.value) params.set("topic", topicFilterEl.value);
   if (sentimentFilterEl.value) params.set("sentiment", sentimentFilterEl.value);
+  if (providerFilterEl.value) params.set("provider", providerFilterEl.value);
   window.location.href = `/records/export?${params.toString()}`;
 });
 
@@ -166,6 +168,7 @@ async function load() {
     if (engineFilterEl.value) recParams.set("engine", engineFilterEl.value);
     if (topicFilterEl.value) recParams.set("topic", topicFilterEl.value);
     if (sentimentFilterEl.value) recParams.set("sentiment", sentimentFilterEl.value);
+    if (providerFilterEl.value) recParams.set("provider", providerFilterEl.value);
 
     const [recRes, statRes] = await Promise.all([
       fetch(`/records?${recParams.toString()}`),
@@ -182,10 +185,14 @@ async function load() {
     buildExportMenu(stats?.export_formats || ["xml", "json", "csv"]);
     populateFilterOptions(topicFilterEl, Object.keys(stats?.by_topic || {}));
     populateFilterOptions(sentimentFilterEl, Object.keys(stats?.by_sentiment || {}));
+    populateFilterOptions(providerFilterEl, Object.keys(stats?.by_provider || {}));
 
-    const activeFilters = [engineFilterEl.value, topicFilterEl.value, sentimentFilterEl.value].filter(
-      Boolean
-    );
+    const activeFilters = [
+      engineFilterEl.value,
+      topicFilterEl.value,
+      sentimentFilterEl.value,
+      providerFilterEl.value,
+    ].filter(Boolean);
     if (!Array.isArray(records) || records.length === 0) {
       emptyEl.textContent = activeFilters.length
         ? `No records match the current filter (${activeFilters.join(", ")}).`
@@ -210,4 +217,5 @@ reloadBtn.addEventListener("click", load);
 engineFilterEl.addEventListener("change", load);
 topicFilterEl.addEventListener("change", load);
 sentimentFilterEl.addEventListener("change", load);
+providerFilterEl.addEventListener("change", load);
 load();
