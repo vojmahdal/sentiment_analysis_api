@@ -246,6 +246,24 @@ def save_record(result: dict[str, Any], source: str = "single") -> None:
         _db_conn.commit()
 
 
+# Sentiment is free text in the schema (custom models can return anything),
+# but only these three values are treated as genuine sentiment labels for
+# grouping/filtering purposes - everything else (e.g. nlptown's "5 stars",
+# "1 star") is bucketed as "other" rather than shown as its own noisy group.
+_KNOWN_SENTIMENTS = ("positive", "negative", "neutral")
+
+# SQL CASE expression normalizing a raw sentiment value to one of
+# positive/negative/neutral/other (NULL stays NULL) - standard SQL, works
+# unchanged on both SQLite and PostgreSQL.
+_SENTIMENT_BUCKET_SQL = (
+    "CASE "
+    "WHEN sentiment IS NULL THEN NULL "
+    "WHEN LOWER(sentiment) IN ('positive', 'negative', 'neutral') THEN LOWER(sentiment) "
+    "ELSE 'other' "
+    "END"
+)
+
+
 def _build_filter(
     engine: str | None = None,
     topic: str | None = None,
@@ -269,11 +287,15 @@ def _build_filter(
         conditions.append("topic = ?")
         params += (topic,)
     if sentiment:
-        # case-insensitive: different BERT models return the label in
-        # different casing ("Negative", "NEGATIVE", "negative", ...) - a
-        # naive exact match would silently miss records from some models.
-        conditions.append("LOWER(sentiment) = ?")
-        params += (sentiment.lower(),)
+        # case-insensitive; "other" means "anything outside the three known
+        # labels" (e.g. nlptown's "5 stars") rather than a literal match.
+        if sentiment.lower() == "other":
+            placeholders = ", ".join(["?"] * len(_KNOWN_SENTIMENTS))
+            conditions.append(f"LOWER(sentiment) NOT IN ({placeholders})")
+            params += _KNOWN_SENTIMENTS
+        else:
+            conditions.append("LOWER(sentiment) = ?")
+            params += (sentiment.lower(),)
     if provider:
         conditions.append("provider = ?")
         params += (provider,)
@@ -346,12 +368,11 @@ def stats() -> dict[str, Any]:
     """Aggregate statistics for the dashboard (counts by sentiment / topic / provider)."""
     with _db_lock:
         total = _execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        # case-insensitive: different BERT models return the sentiment
-        # label in different casing ("Negative", "NEGATIVE", "negative", ...)
-        # - grouping by the raw column would show each casing as its own
-        # separate entry instead of one combined count.
+        # normalized to positive/negative/neutral (case-insensitive); any
+        # other raw value (e.g. nlptown's "5 stars") is bucketed as "other"
+        # instead of showing up as its own noisy group.
         by_sentiment = _execute(
-            "SELECT LOWER(sentiment), COUNT(*) FROM records GROUP BY LOWER(sentiment)"
+            f"SELECT {_SENTIMENT_BUCKET_SQL}, COUNT(*) FROM records GROUP BY 1"
         ).fetchall()
         by_topic = _execute(
             "SELECT topic, COUNT(*) FROM records GROUP BY topic ORDER BY COUNT(*) DESC LIMIT 10"
