@@ -91,6 +91,33 @@ def _fake_llm_pipeline_google(*_args, **_kwargs):
     return LLMPipeline(provider="google", client=FakeGoogleLLMClient())
 
 
+def _fake_llm_pipeline_malformed_topics(*_args, **_kwargs):
+    # Reprodukuje reálně pozorovanou chybu: model vrátí "topics" jako pole
+    # holých řetězců místo objektů {label, score}, přestože schéma objekty
+    # vynucuje - i vynucené schéma není u LLM 100% záruka tvaru.
+    payload = {
+        "sentiment": {"label": "neutral", "score": 0.6},
+        "entities": [],
+        "topics": ["billing and payments"],
+        "pii": [],
+        "pseudonymized_text": "Diky.",
+    }
+    return LLMPipeline(provider="anthropic", client=FakeLLMClient(payload=payload))
+
+
+def _fake_llm_pipeline_malformed_entity(*_args, **_kwargs):
+    # Skutečně nevalidní odpověď (entitě chybí povinné pole "text") - musí
+    # skončit jako čistá 502, ne jako neošetřená výjimka / 500.
+    payload = {
+        "sentiment": {"label": "neutral", "score": 0.6},
+        "entities": [{"label": "PER", "score": 0.9}],
+        "topics": [],
+        "pii": [],
+        "pseudonymized_text": "Diky.",
+    }
+    return LLMPipeline(provider="anthropic", client=FakeLLMClient(payload=payload))
+
+
 def test_llm_result_to_response_maps_analysis_result():
     result = AnalysisResult(
         engine="llm",
@@ -351,3 +378,52 @@ def test_stats_reports_by_provider_breakdown():
     stats = client.get("/stats").json()
     assert stats["by_provider"]["anthropic"] >= 1
     assert stats["by_provider"]["google"] >= 1
+
+
+def test_sentiment_stats_and_filter_are_case_insensitive():
+    # Různé BERT modely vrací label v různém casingu ("Negative", "NEGATIVE",
+    # "negative", ...) - stats() i filtr musí tyto varianty sečíst/najít
+    # jako jednu hodnotu, ne je počítat jako tři různé skupiny.
+    with patch("main.process_message") as mock_process:
+        for label, marker in [("Negative", "case-neg-1"), ("NEGATIVE", "case-neg-2"), ("negative", "case-neg-3")]:
+            mock_process.return_value = {
+                "text": marker,
+                "anonymized_text": marker,
+                "entities": [],
+                "topic": "other",
+                "topic_score": 0.1,
+                "sentiment": label,
+                "sentiment_score": 0.9,
+            }
+            client.post("/analyze", json={"text": marker, "engine": "local"})
+
+    stats = client.get("/stats").json()
+    assert stats["by_sentiment"]["negative"] >= 3
+    assert "Negative" not in stats["by_sentiment"]
+    assert "NEGATIVE" not in stats["by_sentiment"]
+
+    filtered = client.get("/records?sentiment=Negative").json()
+    texts = {r["anonymized_text"] for r in filtered}
+    assert {"case-neg-1", "case-neg-2", "case-neg-3"} <= texts
+
+
+def test_analyze_tolerates_topics_as_bare_strings():
+    # Regrese: "TopicScore() argument after ** must be a mapping, not str"
+    # - model vrátil topics jako pole řetězců místo objektů. Musí se to
+    # tiše doplnit na výchozí skóre, ne spadnout na neošetřené výjimce.
+    with patch.object(main, "LLMPipeline", side_effect=_fake_llm_pipeline_malformed_topics):
+        resp = client.post(
+            "/analyze", json={"text": "billing question", "engine": "anthropic"}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["topic"] == "billing and payments"
+
+
+def test_analyze_llm_malformed_response_returns_clean_502():
+    with patch.object(main, "LLMPipeline", side_effect=_fake_llm_pipeline_malformed_entity):
+        resp = client.post(
+            "/analyze", json={"text": "hi", "engine": "anthropic"}
+        )
+    assert resp.status_code == 502
+    assert "malformed" in resp.json()["detail"].lower()

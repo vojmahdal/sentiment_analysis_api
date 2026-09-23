@@ -43,7 +43,7 @@ ingest → NER → topic classification → sentiment → anonymization → stor
 | Topics | `facebook/bart-large-mnli` (zero-shot) |
 | Sentiment | fine-tuned RoBERTa (`vojmahdal/roberta-sentiment-3labels`) |
 | Anonymization | Microsoft Presidio (spaCy NER + regex), regex fallback |
-| Storage | SQLite (hash of original + anonymized text) |
+| Storage | SQLite by default, optional PostgreSQL (hash of original + anonymized text) |
 
 ## Endpoints
 
@@ -262,12 +262,22 @@ The LLM engines are entirely optional: without any provider API key set,
 the app runs exactly as before (`local` engine only). To enable one or more
 providers, copy `.env.example` to `.env` and set `GEMINI_API_KEY` (the
 default provider - has a usable free tier) and/or, if you have your own key
-for them, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`; see
-[`APPLY_V8.md`](APPLY_V8.md) for how to apply this version on top of an
-existing V7 checkout.
+for them, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
 
-## Future work
+## Database backend (SQLite / PostgreSQL)
 
-SQLite (used here for both engines' results) is a placeholder for local
-development and Hugging Face Spaces hosting. A move to a self-hosted
-deployment with MongoDB is planned but out of scope for this version.
+SQLite is the default (used here for both engines' results) - zero-config,
+serverless, a single file (`conversation_logs.db`, path configurable via
+`CONV_DB_PATH`). It's a good fit for local development and the current
+Hugging Face Spaces hosting.
+
+For a deployment that needs a real server-backed database (e.g. concurrent
+writers across multiple instances, managed backups), set `DATABASE_URL` to a
+PostgreSQL connection string (`postgresql://user:pass@host:5432/dbname`) -
+`db.py` switches backend automatically and the rest of the application
+(`main.py`, `pipeline.py`) needs no changes, since every function in `db.py`
+keeps the exact same signature regardless of which database is behind it.
+Requires the `psycopg2-binary` package (already in `requirements.txt`). See
+`.env.example` for the exact variable.
+
+

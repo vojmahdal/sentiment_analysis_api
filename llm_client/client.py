@@ -10,12 +10,15 @@ která vrací dvojici (data, metadata) – data odpovídají schématu z modulu
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 from . import prompts
 from .config import PROVIDERS, SETTINGS, ProviderConfig
+
+log = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
@@ -65,10 +68,13 @@ class AnthropicClient(LLMClient):
 
     def analyze(self, text: str) -> Tuple[Dict[str, Any], CallMeta]:
         started = time.perf_counter()
+        # temperature se záměrně neposílá - novější modely (Opus 5, Sonnet 5,
+        # Fable 5/5.1) sampling parametry vůbec nepřijímají a volání by s nimi
+        # selhalo; extrakce je navíc vynucená přes tool_choice, takže na
+        # náhodnosti výstupu nezáleží.
         response = self._sdk.messages.create(
             model=self.cfg.model,
             max_tokens=self.cfg.max_tokens,
-            temperature=self.cfg.temperature,
             system=prompts.SYSTEM_PROMPT,
             tools=[prompts.anthropic_tool()],
             tool_choice={"type": "tool", "name": prompts.TOOL_NAME},
@@ -108,10 +114,12 @@ class OpenAIClient(LLMClient):
 
     def analyze(self, text: str) -> Tuple[Dict[str, Any], CallMeta]:
         started = time.perf_counter()
+        # max_completion_tokens (ne max_tokens) - novější modely (gpt-5.x
+        # nano/mini apod.) starý název parametru odmítají. temperature se
+        # záměrně neposílá - tyto modely přijímají jen výchozí hodnotu.
         response = self._sdk.chat.completions.create(
             model=self.cfg.model,
-            max_tokens=self.cfg.max_tokens,
-            temperature=self.cfg.temperature,
+            max_completion_tokens=self.cfg.max_tokens,
             response_format=prompts.openai_response_format(),
             messages=[{"role": "system", "content": prompts.SYSTEM_PROMPT}]
             + prompts.build_messages(text),
@@ -209,8 +217,19 @@ def call_with_retry(client: LLMClient, text: str) -> Tuple[Dict[str, Any], CallM
     for attempt in range(SETTINGS.max_retries):
         try:
             return client.analyze(text)
-        except Exception as exc:  # noqa: BLE001 – záměrně široké, chyba se loguje
+        except Exception as exc:  # noqa: BLE001 – záměrně široké, každý pokus se loguje níže
             last = exc
+            # Bez tohoto logu je zvenku nerozeznatelné, jestli poskytovatel
+            # jen odpovídá pomaleji, nebo se to potichu opakuje kvůli 429
+            # (rate limit) / 403 (zablokovaný klíč, podezření na zneužití) -
+            # takové chyby se jinak ztratí, dokud nevyprší i poslední pokus.
+            log.warning(
+                "Pokus %d/%d u %s selhal: %s",
+                attempt + 1,
+                SETTINGS.max_retries,
+                type(exc).__name__,
+                exc,
+            )
             if attempt == SETTINGS.max_retries - 1:
                 break
             time.sleep(2**attempt)

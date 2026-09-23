@@ -12,3 +12,6 @@ anthropic
 openai
 google-generativeai
 python-dotenv
+
+# volitelný PostgreSQL backend (výchozí zůstává SQLite) - viz db.py a DATABASE_URL v .env.example
+psycopg2-binary

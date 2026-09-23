@@ -21,13 +21,26 @@ import concurrent.futures
 import logging
 import re
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .client import LLMClient, call_with_retry, get_client
 from .config import SETTINGS
 from .schemas import AnalysisResult, Entity, PIISpan, Sentiment, TopicScore
 
 log = logging.getLogger(__name__)
+
+
+def _coerce_topic(item: Any) -> Dict[str, Any]:
+    """
+    Schéma vynucuje objekt {label, score}, ale ani vynucené schéma není u LLM
+    100% záruka - slabší modely občas vrátí pole holých řetězců místo objektů.
+    Takový záznam se nezahazuje (ztráta informace), ale doplní o výchozí
+    skóre, aby TopicScore(**item) nespadlo na "argument after ** must be a
+    mapping, not str".
+    """
+    if isinstance(item, str):
+        return {"label": item, "score": 1.0}
+    return item
 
 
 # --------------------------------------------------------------------------
@@ -155,15 +168,24 @@ class LLMPipeline:
         result.cost_usd = meta.cost_usd
         result.raw_response = payload
 
-        result.sentiment = Sentiment(**payload.get("sentiment", {}))
-        result.entities = [Entity(**e) for e in payload.get("entities", [])]
-        result.topics = [TopicScore(**t) for t in payload.get("topics", [])]
+        # I s vynuceným schématem se občas stane, že model (typicky u
+        # levnějších/menších modelů) vrátí tvar mírně odlišný od schématu -
+        # zpracování takové odpovědi nesmí spadnout na neošetřené výjimce,
+        # ale skončit jako čistá chyba stejně jako selhání samotného volání.
+        try:
+            result.sentiment = Sentiment(**payload.get("sentiment", {}))
+            result.entities = [Entity(**e) for e in payload.get("entities", [])]
+            result.topics = [TopicScore(**_coerce_topic(t)) for t in payload.get("topics", [])]
 
-        model_spans = [PIISpan(**p) for p in payload.get("pii", [])]
-        # V režimu pre_pseudonymized je autoritativní lokální detekce;
-        # nálezy modelu se přidávají jako doplněk (reziduální PII).
-        result.pii = local_spans + model_spans if local_spans else model_spans
-        result.pseudonymized_text = payload.get("pseudonymized_text") or sent_text
+            model_spans = [PIISpan(**p) for p in payload.get("pii", [])]
+            # V režimu pre_pseudonymized je autoritativní lokální detekce;
+            # nálezy modelu se přidávají jako doplněk (reziduální PII).
+            result.pii = local_spans + model_spans if local_spans else model_spans
+            result.pseudonymized_text = payload.get("pseudonymized_text") or sent_text
+        except (TypeError, ValueError) as exc:
+            result.error = f"Model returned malformed structured output: {exc}"
+            log.error("Zpracování odpovědi selhalo: %s", exc)
+            return result
 
         # Doplnění offsetů, které model nevrací spolehlivě.
         _fill_offsets(result.entities, sent_text)

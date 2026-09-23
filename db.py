@@ -1,14 +1,19 @@
 """
-Database layer (SQLite).
+Database layer (SQLite by default, PostgreSQL optional).
 
 Stores the structured output of the pipeline in a pseudonymized form. The
 original text is never stored in readable form: only a SHA-256 hash (for
 deduplication) and the anonymized text are persisted, together with the
 extracted entities, topic and sentiment.
 
-SQLite was chosen for the prototype (serverless, zero-config, portable). The
-layer is intentionally small so it can be swapped for PostgreSQL in a
-production deployment without changing the rest of the application.
+SQLite was chosen for the prototype (serverless, zero-config, portable) and
+remains the default. Setting the ``DATABASE_URL`` environment variable to a
+``postgres://`` / ``postgresql://`` connection string switches this module to
+PostgreSQL instead - the rest of the application (main.py, pipeline.py) is
+completely unaware of which backend is active, since every query below still
+goes through the same functions. This mirrors how the LLM engine is selected
+(env var, both branches supported side by side) rather than a one-way
+migration.
 """
 
 from __future__ import annotations
@@ -27,6 +32,9 @@ from xml.etree import ElementTree as ET
 
 from processors import anonymizer
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+IS_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")))
+
 # Export formats supported by export_records(), each mapped to its HTTP
 # media type. Adding a new format only requires a new "_export_<fmt>"
 # function plus an entry here.
@@ -38,6 +46,8 @@ EXPORT_FORMATS = {
 
 # ---------------------------------------------------------------------------
 # Database location: project folder on Windows, /tmp on Linux (HF Spaces).
+# Only relevant for the SQLite backend - ignored when DATABASE_URL selects
+# PostgreSQL instead.
 # ---------------------------------------------------------------------------
 if os.name == "nt":
     DB_PATH = os.getenv(
@@ -49,8 +59,21 @@ else:
 
 _db_lock = threading.Lock()
 
+# SQLite columns are added one at a time via ALTER TABLE (no "ADD COLUMN IF
+# NOT EXISTS" support), so a duplicate-column error on an already-migrated
+# database is expected and ignored. PostgreSQL supports "IF NOT EXISTS"
+# directly, so its migration loop (in _get_postgres_connection) needs no
+# such try/except.
+_NEW_COLUMNS = (
+    ("engine", "TEXT DEFAULT 'local'"),
+    ("provider", "TEXT"),
+    ("model", "TEXT"),
+    ("latency_ms", "INTEGER"),
+    ("cost_usd", "REAL"),
+)
 
-def _get_connection() -> sqlite3.Connection:
+
+def _get_sqlite_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute(
         """
@@ -72,22 +95,97 @@ def _get_connection() -> sqlite3.Connection:
     # Since V8: which engine produced the record ('local' or 'llm') and,
     # for the LLM engine, which provider/model answered plus its latency and
     # cost. Added via ALTER TABLE so existing conversation_logs.db files from
-    # earlier versions keep working; SQLite has no "ADD COLUMN IF NOT
-    # EXISTS", so a duplicate-column error on an already-migrated database
-    # is expected and ignored.
-    for column_def in (
-        "engine TEXT DEFAULT 'local'",
-        "provider TEXT",
-        "model TEXT",
-        "latency_ms INTEGER",
-        "cost_usd REAL",
-    ):
+    # earlier versions keep working.
+    for name, coltype in _NEW_COLUMNS:
         try:
-            conn.execute(f"ALTER TABLE records ADD COLUMN {column_def}")
+            conn.execute(f"ALTER TABLE records ADD COLUMN {name} {coltype}")
         except sqlite3.OperationalError:
             pass  # column already exists
     conn.commit()
     return conn
+
+
+def _get_postgres_connection():
+    try:
+        import psycopg2
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "DATABASE_URL points to PostgreSQL but the 'psycopg2-binary' "
+            "package is not installed (pip install psycopg2-binary)."
+        ) from exc
+
+    conn = psycopg2.connect(DATABASE_URL)
+    # Bez autocommitu otevírá psycopg2 implicitní transakci i pro čisté
+    # SELECT dotazy (get_records/stats nikdy nevolají commit ani rollback);
+    # pokud kterýkoli dotaz na sdíleném spojení někdy selže, zůstane
+    # transakce ve stavu "aborted" a UPLNE VŠECHNY další dotazy na stejném
+    # spojení pak hned selžou, dokud se transakce nezruší. SQLite se takto
+    # nechová (proto to na SQLite fungovalo bez problémů) - autocommit tomu
+    # u PostgreSQL předchází a zároveň sjednocuje chování obou backendů.
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS records (
+            id SERIAL PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            original_hash TEXT NOT NULL,
+            anonymized_text TEXT NOT NULL,
+            entities TEXT,
+            topic TEXT,
+            topic_score REAL,
+            sentiment TEXT,
+            sentiment_score REAL,
+            conversation_id TEXT,
+            source TEXT
+        )
+        """
+    )
+    for name, coltype in _NEW_COLUMNS:
+        cur.execute(f"ALTER TABLE records ADD COLUMN IF NOT EXISTS {name} {coltype}")
+    conn.commit()
+    cur.close()
+    return conn
+
+
+def _get_connection():
+    return _get_postgres_connection() if IS_POSTGRES else _get_sqlite_connection()
+
+
+def _execute(query: str, params: tuple = ()):
+    """
+    Run a query on whichever backend is active. Every query in this module
+    is written with SQLite's ``?`` placeholder; PostgreSQL (via psycopg2)
+    expects ``%s`` instead, so it is translated here - the one place that
+    needs to know the difference. Both backends return a cursor-like object
+    supporting ``fetchone()``/``fetchall()``.
+
+    PostgreSQL specifically: a managed/serverless provider (e.g. Neon) can
+    close an idle connection server-side (scale-to-zero, idle timeout) at
+    any time. Since this module keeps ONE long-lived connection for the
+    whole process lifetime, that leaves it permanently broken
+    (``psycopg2.InterfaceError: connection already closed``) for every
+    request from then on until the process restarts - reconnect once and
+    retry instead of letting that happen.
+    """
+    global _db_conn
+
+    if not IS_POSTGRES:
+        return _db_conn.execute(query, params)
+
+    import psycopg2
+
+    translated = query.replace("?", "%s")
+    try:
+        cur = _db_conn.cursor()
+        cur.execute(translated, params)
+        return cur
+    except (psycopg2.InterfaceError, psycopg2.OperationalError) as exc:
+        print(f"[db] PostgreSQL connection lost ({exc}); reconnecting...")
+        _db_conn = _get_postgres_connection()
+        cur = _db_conn.cursor()
+        cur.execute(translated, params)
+        return cur
 
 
 _db_conn = _get_connection()
@@ -118,7 +216,7 @@ def save_record(result: dict[str, Any], source: str = "single") -> None:
     entities_json = json.dumps(result.get("entities", []), ensure_ascii=False)
 
     with _db_lock:
-        _db_conn.execute(
+        _execute(
             """
             INSERT INTO records (
                 created_at, original_hash, anonymized_text, entities,
@@ -171,8 +269,11 @@ def _build_filter(
         conditions.append("topic = ?")
         params += (topic,)
     if sentiment:
-        conditions.append("sentiment = ?")
-        params += (sentiment,)
+        # case-insensitive: different BERT models return the label in
+        # different casing ("Negative", "NEGATIVE", "negative", ...) - a
+        # naive exact match would silently miss records from some models.
+        conditions.append("LOWER(sentiment) = ?")
+        params += (sentiment.lower(),)
     if provider:
         conditions.append("provider = ?")
         params += (provider,)
@@ -210,7 +311,7 @@ def get_records(
     params = where_params + (limit,)
 
     with _db_lock:
-        cur = _db_conn.execute(query, params)
+        cur = _execute(query, params)
         rows = cur.fetchall()
 
     records = []
@@ -244,14 +345,18 @@ def get_records(
 def stats() -> dict[str, Any]:
     """Aggregate statistics for the dashboard (counts by sentiment / topic / provider)."""
     with _db_lock:
-        total = _db_conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        by_sentiment = _db_conn.execute(
-            "SELECT sentiment, COUNT(*) FROM records GROUP BY sentiment"
+        total = _execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        # case-insensitive: different BERT models return the sentiment
+        # label in different casing ("Negative", "NEGATIVE", "negative", ...)
+        # - grouping by the raw column would show each casing as its own
+        # separate entry instead of one combined count.
+        by_sentiment = _execute(
+            "SELECT LOWER(sentiment), COUNT(*) FROM records GROUP BY LOWER(sentiment)"
         ).fetchall()
-        by_topic = _db_conn.execute(
+        by_topic = _execute(
             "SELECT topic, COUNT(*) FROM records GROUP BY topic ORDER BY COUNT(*) DESC LIMIT 10"
         ).fetchall()
-        by_provider = _db_conn.execute(
+        by_provider = _execute(
             "SELECT provider, COUNT(*) FROM records WHERE provider IS NOT NULL GROUP BY provider"
         ).fetchall()
 
@@ -285,7 +390,7 @@ def _fetch_export_rows(
         params += (limit,)
 
     with _db_lock:
-        return _db_conn.execute(query, params).fetchall()
+        return _execute(query, params).fetchall()
 
 
 def _row_entities(row: tuple[Any, ...]) -> list[dict[str, Any]]:

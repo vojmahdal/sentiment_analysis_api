@@ -82,24 +82,24 @@ class ProviderConfig:
 PROVIDERS: Dict[str, ProviderConfig] = {
     "anthropic": ProviderConfig(
         name="anthropic",
-        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+        model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5"),
         api_key_env="ANTHROPIC_API_KEY",
-        price_in_per_mtok=float(os.getenv("ANTHROPIC_PRICE_IN", "3.00")),
-        price_out_per_mtok=float(os.getenv("ANTHROPIC_PRICE_OUT", "15.00")),
+        price_in_per_mtok=float(os.getenv("ANTHROPIC_PRICE_IN", "1.00")),
+        price_out_per_mtok=float(os.getenv("ANTHROPIC_PRICE_OUT", "5.00")),
     ),
     "openai": ProviderConfig(
         name="openai",
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=os.getenv("OPENAI_MODEL", "gpt-5.4-nano"),
         api_key_env="OPENAI_API_KEY",
-        price_in_per_mtok=float(os.getenv("OPENAI_PRICE_IN", "0.15")),
-        price_out_per_mtok=float(os.getenv("OPENAI_PRICE_OUT", "0.60")),
+        price_in_per_mtok=float(os.getenv("OPENAI_PRICE_IN", "0.20")),
+        price_out_per_mtok=float(os.getenv("OPENAI_PRICE_OUT", "1.25")),
     ),
     "google": ProviderConfig(
         name="google",
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
         api_key_env="GEMINI_API_KEY",
-        price_in_per_mtok=float(os.getenv("GEMINI_PRICE_IN", "0.30")),
-        price_out_per_mtok=float(os.getenv("GEMINI_PRICE_OUT", "2.50")),
+        price_in_per_mtok=float(os.getenv("GEMINI_PRICE_IN", "0.75")),
+        price_out_per_mtok=float(os.getenv("GEMINI_PRICE_OUT", "3.75")),
     ),
 }
 
